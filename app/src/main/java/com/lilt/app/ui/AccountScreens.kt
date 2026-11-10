@@ -4,6 +4,7 @@ package com.lilt.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
@@ -30,8 +31,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import coil.imageLoader
 import com.lilt.app.*
+import com.lilt.app.R
 import com.lilt.app.data.*
 import com.lilt.app.ui.theme.*
 
@@ -272,8 +275,10 @@ fun LoginScreen(state: AppState, vm: LiltViewModel) {
             .padding(horizontal = 28.dp).padding(top = 24.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.size(52.dp).shadow(12.dp, RoundedCornerShape(16.dp), ambientColor = primary.copy(alpha = .25f),
-                    spotColor = primary.copy(alpha = .3f)).background(primary, RoundedCornerShape(16.dp)),
-                    contentAlignment = Alignment.Center) { AppIcon(Glyph.Music, Modifier.size(28.dp), MaterialTheme.colorScheme.onPrimary) }
+                    spotColor = primary.copy(alpha = .3f)).clip(RoundedCornerShape(16.dp))) {
+                    AndroidView(factory = { ImageView(it).apply { setImageResource(R.drawable.ic_lilt_artwork) } },
+                        modifier = Modifier.fillMaxSize())
+                }
                 Spacer(Modifier.height(20.dp))
                 Text("登录 QQ 音乐账号", fontSize = 26.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
                 Text("同步你喜欢的歌、歌单和会员音质", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

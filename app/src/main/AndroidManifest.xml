@@ -10,8 +10,8 @@
         android:name=".LiltApplication"
         android:allowBackup="false"
         android:label="Lilt"
-        android:icon="@drawable/ic_lilt"
-        android:roundIcon="@drawable/ic_lilt"
+        android:icon="@mipmap/ic_lilt"
+        android:roundIcon="@mipmap/ic_lilt"
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Lilt">
