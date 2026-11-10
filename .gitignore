@@ -1,0 +1,23 @@
+# ai
+.trellis/
+.codex/
+.claude/
+.agents/
+AGENTS.md
+
+# Android
+.gradle/
+.kotlin/
+.bootstrap/
+**/build/
+local.properties
+*.iml
+.idea/
+.impeccable/review/
+.impeccable/questions/
+.impeccable/mocks/
+captures/
+build-check.log
+account-*-check.log
+navigation-device-check.log
+**/__pycache__/

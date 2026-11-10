@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <!-- Some QQ Music vkey responses still use HTTP CDN origins. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">qq.com</domain>
+        <domain includeSubdomains="true">qqmusic.qq.com</domain>
+        <domain includeSubdomains="true">stream.qqmusic.tc.qq.com</domain>
+        <domain includeSubdomains="true">isure.stream.qqmusic.qq.com</domain>
+    </domain-config>
+</network-security-config>

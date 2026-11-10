@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.Lilt" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/lilt_background</item>
+        <item name="android:colorAccent">@color/lilt_green</item>
+    </style>
+    <!-- Radix gray 2 and green 9, matching the Compose roles. -->
+    <color name="lilt_background">#F9F9F9</color>
+    <color name="lilt_green">#30A46C</color>
+</resources>
