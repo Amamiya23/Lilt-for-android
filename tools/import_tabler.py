@@ -14,6 +14,8 @@ ICONS = [
     "moon", "sun", "device-mobile", "trash", "share", "folder", "brand-qq",
     "brand-wechat", "qrcode", "arrows-sort", "arrow-up", "alert-circle", "clover",
     "arrow-up-right", "external-link", "info-circle", "logout", "adjustments",
+    "infinity", "grip-horizontal", "player-track-next", "playlist-add", "zzz", "shopping-bag",
+    "wave-sine", "database", "lock", "dots-vertical",
 ]
 NS = "{http://www.w3.org/2000/svg}"
 

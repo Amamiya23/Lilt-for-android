@@ -3,6 +3,7 @@ package com.lilt.app.ui
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -10,39 +11,43 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Fill
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.lilt.app.R
 import com.lilt.app.data.Song
-import com.lilt.app.ui.theme.Radix
-import kotlin.math.min
+import com.lilt.app.ui.theme.lilt
 
 enum class Glyph(@param:DrawableRes val res: Int) {
     Home(R.drawable.ic_home), Search(R.drawable.ic_search), User(R.drawable.ic_user),
     Settings(R.drawable.ic_settings), Back(R.drawable.ic_chevron_left), Right(R.drawable.ic_chevron_right),
-    Down(R.drawable.ic_chevron_down), More(R.drawable.ic_dots), Heart(R.drawable.ic_heart),
-    Queue(R.drawable.ic_playlist), Lyrics(R.drawable.ic_lyrics), Shuffle(R.drawable.ic_shuffle),
+    Down(R.drawable.ic_chevron_down), More(R.drawable.ic_dots), MoreVertical(R.drawable.ic_dots_vertical),
+    Heart(R.drawable.ic_heart), Queue(R.drawable.ic_playlist), Lyrics(R.drawable.ic_lyrics), Shuffle(R.drawable.ic_shuffle),
     Repeat(R.drawable.ic_repeat), RepeatOne(R.drawable.ic_repeat_once), Radio(R.drawable.ic_radio),
     Microphone(R.drawable.ic_microphone_2), Disc(R.drawable.ic_disc), Download(R.drawable.ic_download),
     Plus(R.drawable.ic_plus), Close(R.drawable.ic_x), Refresh(R.drawable.ic_refresh),
     Check(R.drawable.ic_check), Clock(R.drawable.ic_clock), Music(R.drawable.ic_music),
     Headphones(R.drawable.ic_headphones), Volume(R.drawable.ic_volume), Moon(R.drawable.ic_moon),
     Trash(R.drawable.ic_trash), Share(R.drawable.ic_share), Folder(R.drawable.ic_folder),
-    Qq(R.drawable.ic_brand_qq), Wechat(R.drawable.ic_brand_wechat), Qr(R.drawable.ic_qrcode),
-    Sort(R.drawable.ic_arrows_sort), Up(R.drawable.ic_arrow_up), Alert(R.drawable.ic_alert_circle),
+    Qr(R.drawable.ic_qrcode), Sort(R.drawable.ic_arrows_sort), Up(R.drawable.ic_arrow_up), Alert(R.drawable.ic_alert_circle),
     Clover(R.drawable.ic_clover), External(R.drawable.ic_external_link), Info(R.drawable.ic_info_circle),
-    Logout(R.drawable.ic_logout), Adjust(R.drawable.ic_adjustments)
+    Logout(R.drawable.ic_logout), Adjust(R.drawable.ic_adjustments), Endless(R.drawable.ic_infinity),
+    Drag(R.drawable.ic_grip_horizontal), PlayNext(R.drawable.ic_player_track_next), PlaylistAdd(R.drawable.ic_playlist_add),
+    Sleep(R.drawable.ic_zzz), Purchased(R.drawable.ic_shopping_bag), Fade(R.drawable.ic_wave_sine),
+    Storage(R.drawable.ic_database), Lock(R.drawable.ic_lock),
 }
 
 @Composable
@@ -52,10 +57,32 @@ fun AppIcon(glyph: Glyph, modifier: Modifier = Modifier, tint: Color = LocalCont
 
 @Composable
 fun IconAction(glyph: Glyph, description: String, modifier: Modifier = Modifier,
-               tint: Color = LocalContentColor.current, enabled: Boolean = true, onClick: () -> Unit) {
+               tint: Color = LocalContentColor.current, enabled: Boolean = true, iconSize: Dp = 22.dp, onClick: () -> Unit) {
     IconButton(onClick, modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp), enabled = enabled) {
-        AppIcon(glyph, tint = if (enabled) tint else tint.copy(alpha = .38f), description = description)
+        AppIcon(glyph, Modifier.size(iconSize), if (enabled) tint else tint.copy(alpha = .38f), description)
     }
+}
+
+/** A round button on a filled disc, as the design's back, like and more buttons; the touch target stays 48. */
+@Composable
+fun CircleAction(glyph: Glyph, description: String, fill: Color, modifier: Modifier = Modifier, size: Dp = 40.dp,
+                 iconSize: Dp = 20.dp, tint: Color = LocalContentColor.current, shadow: Boolean = false,
+                 enabled: Boolean = true, onClick: () -> Unit) {
+    Box(modifier.size(maxOf(size, 48.dp)).clip(CircleShape)
+        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        .semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(size).then(if (shadow) Modifier.softShadow(CircleShape) else Modifier).background(fill, CircleShape),
+            contentAlignment = Alignment.Center) {
+            AppIcon(glyph, Modifier.size(iconSize), if (enabled) tint else tint.copy(alpha = .38f))
+        }
+    }
+}
+
+/** The design's card shadow: #16181C at 4%, y 4, blur 20. */
+@Composable
+fun Modifier.softShadow(shape: Shape, elevation: Dp = 10.dp): Modifier {
+    val color = MaterialTheme.lilt.shadow
+    return shadow(elevation, shape, clip = false, ambientColor = color.copy(alpha = .05f), spotColor = color.copy(alpha = .10f))
 }
 
 @Composable
@@ -119,42 +146,57 @@ fun TransportButton(kind: Transport, description: String, size: Dp = 28.dp,
     }
 }
 
+/** A song row. [subtitle] defaults to the artist; [trailing] replaces the more button, as the like heart on home shelves. */
 @Composable
 fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modifier = Modifier,
-            active: Boolean = false, index: Int? = null) {
-    Row(modifier.fillMaxWidth().heightIn(min = 68.dp).clip(RoundedCornerShape(12.dp))
-        .clickable(onClick = onClick).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            active: Boolean = false, index: Int? = null, height: Dp = 64.dp, cover: Dp = 48.dp, coverRadius: Dp = 8.dp,
+            subtitle: String = song.artist, trailing: (@Composable () -> Unit)? = null) {
+    val tertiary = MaterialTheme.lilt.textTertiary
+    Row(modifier.fillMaxWidth().heightIn(min = height).clip(RoundedCornerShape(12.dp))
+        .clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
         if (index != null) {
-            Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
-                if (active) AppIcon(Glyph.Volume, Modifier.size(18.dp), MaterialTheme.colorScheme.primary)
-                else Text(index.toString(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Box(Modifier.width(22.dp), contentAlignment = Alignment.Center) {
+                if (active) AppIcon(Glyph.Volume, Modifier.size(18.dp), MaterialTheme.colorScheme.primary, "正在播放")
+                else Text(index.toString(), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = tertiary)
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(14.dp))
         } else {
-            Artwork(song.cover, Modifier.size(48.dp), 10.dp)
-            Spacer(Modifier.width(12.dp))
+            Artwork(song.cover, Modifier.size(cover), coverRadius)
+            Spacer(Modifier.width(14.dp))
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(song.title, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyLarge, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(listOf(song.artist, song.album).filter { it.isNotBlank() }.joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        IconAction(Glyph.More, "${song.title}的更多操作", Modifier.size(48.dp),
-            MaterialTheme.colorScheme.onSurfaceVariant, onClick = onMore)
+        if (trailing != null) trailing()
+        else IconAction(Glyph.More, "${song.title}的更多操作", tint = tertiary, iconSize = 20.dp, onClick = onMore)
     }
 }
 
 @Composable
-fun SectionTitle(title: String, action: String? = null, onAction: () -> Unit = {}) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+fun SectionTitle(title: String, action: String? = null, modifier: Modifier = Modifier, onAction: () -> Unit = {}) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-        if (action != null) TextButton(onAction, contentPadding = PaddingValues(start = 12.dp)) {
-            Text(action, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            AppIcon(Glyph.Right, Modifier.size(16.dp), MaterialTheme.colorScheme.onSurfaceVariant)
+        if (action != null) Row(Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onAction)
+            .heightIn(min = 40.dp).padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(action, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AppIcon(Glyph.Right, Modifier.size(18.dp), MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+/** The design's soft green pill, as 播放全部 in search and 刷新二维码 on login. */
+@Composable
+fun SoftPill(text: String, glyph: Glyph?, modifier: Modifier = Modifier, iconSize: Dp = 16.dp,
+             horizontal: Dp = 12.dp, vertical: Dp = 6.dp, fontSize: Int = 12, enabled: Boolean = true, onClick: () -> Unit) {
+    Row(modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer)
+        .clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(horizontal = horizontal, vertical = vertical),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        if (glyph != null) AppIcon(glyph, Modifier.size(iconSize), MaterialTheme.colorScheme.primary)
+        Text(text, fontSize = fontSize.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -167,7 +209,7 @@ fun EmptyState(title: String, message: String? = null, glyph: Glyph = Glyph.Musi
         Text(title, style = MaterialTheme.typography.titleSmall)
         if (!message.isNullOrBlank()) Text(message, style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        if (action != null) FilledTonalButton(onAction) { Text(action) }
+        if (action != null) SoftPill(action, null, horizontal = 16.dp, vertical = 8.dp, fontSize = 13, onClick = onAction)
     }
 }
 
@@ -178,33 +220,63 @@ fun LoadingState(modifier: Modifier = Modifier) {
     }
 }
 
+/** A white card with the design's soft shadow; rows inside draw their own dividers. */
 @Composable
-fun GroupCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surface)
-        .padding(horizontal = 16.dp, vertical = 4.dp), content = content)
+fun GroupCard(modifier: Modifier = Modifier, radius: Dp = 22.dp, horizontal: Dp = 16.dp, vertical: Dp = 2.dp,
+              content: @Composable ColumnScope.() -> Unit) {
+    val shape = RoundedCornerShape(radius)
+    Column(modifier.fillMaxWidth().softShadow(shape).clip(shape).background(MaterialTheme.colorScheme.surface)
+        .padding(horizontal = horizontal, vertical = vertical), content = content)
 }
 
 @Composable
+fun RowDivider(modifier: Modifier = Modifier) {
+    HorizontalDivider(modifier, 1.dp, MaterialTheme.lilt.divider)
+}
+
+/** A settings row: 21 icon, 15 label with an optional 12 subtitle, a 14 value and an 18 chevron. */
+@Composable
 fun SettingRow(glyph: Glyph, label: String, value: String? = null, onClick: (() -> Unit)? = null,
-               trailing: (@Composable () -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
-        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+               subtitle: String? = null, iconWrap: Boolean = false, trailing: (@Composable () -> Unit)? = null) {
+    Row(Modifier.fillMaxWidth().heightIn(min = if (iconWrap) 58.dp else 48.dp)
+        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        .padding(vertical = if (iconWrap) 12.dp else 13.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        AppIcon(glyph, Modifier.size(21.dp))
+        if (iconWrap) Box(Modifier.size(34.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(11.dp)),
+            contentAlignment = Alignment.Center) { AppIcon(glyph, Modifier.size(19.dp)) }
+        else AppIcon(glyph, Modifier.size(21.dp))
         Spacer(Modifier.width(14.dp))
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-        if (value != null) Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (trailing != null) trailing()
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (value != null) Text(value, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp))
+        if (trailing != null) { Spacer(Modifier.width(8.dp)); trailing() }
         else if (onClick != null) {
-            Spacer(Modifier.width(8.dp))
-            AppIcon(Glyph.Right, Modifier.size(18.dp), MaterialTheme.colorScheme.outline)
+            Spacer(Modifier.width(4.dp))
+            AppIcon(Glyph.Right, Modifier.size(18.dp), MaterialTheme.lilt.textTertiary)
+        }
+    }
+}
+
+/** The design's 46×28 switch with a 22 thumb. */
+@Composable
+fun LiltSwitch(checked: Boolean, onChange: (Boolean) -> Unit, description: String, enabled: Boolean = true) {
+    val track by androidx.compose.animation.animateColorAsState(
+        if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, label = "switchTrack")
+    val offset by androidx.compose.animation.core.animateDpAsState(if (checked) 18.dp else 0.dp, label = "switchThumb")
+    Box(Modifier.size(48.dp, 48.dp).toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+        .semantics { contentDescription = description }, contentAlignment = Alignment.CenterEnd) {
+        Box(Modifier.size(46.dp, 28.dp).background(track.copy(alpha = if (enabled) 1f else .5f), RoundedCornerShape(14.dp)).padding(3.dp)) {
+            Box(Modifier.offset(x = offset).size(22.dp).shadow(1.5.dp, CircleShape).background(Color.White, CircleShape))
         }
     }
 }
 
 fun formatTime(ms: Long): String = "%d:%02d".format((ms.coerceAtLeast(0) / 60000), (ms.coerceAtLeast(0) / 1000) % 60)
 fun formatCount(count: Long): String = when {
-    count >= 100000000 -> "%.1f 亿".format(count / 100000000.0)
-    count >= 10000 -> "%.1f 万".format(count / 10000.0)
+    count >= 100000000 -> "%.1f亿".format(count / 100000000.0).replace(".0亿", "亿")
+    count >= 10000 -> "%.1f万".format(count / 10000.0).replace(".0万", "万")
     else -> count.toString()
 }

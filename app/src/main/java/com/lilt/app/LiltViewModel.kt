@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.*
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Local }
+enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Local }
 enum class PlayerPanel { Artwork, Lyrics, Queue }
 
 data class AppState(
@@ -56,6 +56,21 @@ data class AppState(
     val recent: List<Song> = emptyList(),
     val local: List<Song> = emptyList(),
     val preview: Boolean = false,
+    val membership: Membership? = null,
+    val collectionAlbums: List<Album> = emptyList(),
+    val collectionLoading: Boolean = false,
+    val collectionError: String? = null,
+    /** Where the queue came from, as 来自歌单 · 深夜城市漫游. */
+    val queueSource: String = "",
+    /** Continue with the personal FM when the queue runs out. */
+    val endless: Boolean = false,
+    val sleepAt: Long = 0,
+    val normalize: Boolean = false,
+    val fade: Boolean = false,
+    val wordLyrics: Boolean = true,
+    val downloadQuality: String = "hq",
+    val cacheLimitMb: Long = 2048,
+    val cacheUsed: Long = 0,
 )
 
 class LiltViewModel(application: Application) : AndroidViewModel(application) {
@@ -67,6 +82,10 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     private val mutable = MutableStateFlow(AppState(
         theme = ThemeMode.entries.firstOrNull { it.name == preferences.getString("theme", "") } ?: ThemeMode.System,
         quality = preferences.getString("quality", "standard") ?: "standard",
+        endless = preferences.getBoolean("endless", false), normalize = preferences.getBoolean("normalize", false),
+        fade = preferences.getBoolean("fade", false), wordLyrics = preferences.getBoolean("word_lyrics", true),
+        downloadQuality = preferences.getString("download_quality", "hq") ?: "hq",
+        cacheLimitMb = preferences.getLong("cache_limit_mb", 2048),
         recent = readSongs("recent"), local = readSongs("local"),
         searchHistory = readStrings("search_history"),
     ))
@@ -76,7 +95,10 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     private var detailJob: Job? = null
     private var qrJob: Job? = null
     private var lyricJob: Job? = null
+    private var radioJob: Job? = null
+    private var sleepJob: Job? = null
     private val backStack = mutableListOf<Destination>()
+    private val detailStack = mutableListOf<PlaylistDetail>()
     private val events = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages = events.asSharedFlow()
 
@@ -98,7 +120,37 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
-            profile.collect { user -> if (user != null) { refreshLibrary(); refreshHome() } }
+            profile.collect { user ->
+                if (user != null) { refreshLibrary(); refreshHome(); refreshMembership() }
+                else mutable.update { it.copy(membership = null) }
+            }
+        }
+        // An endless queue continues with the personal FM two songs before the end.
+        viewModelScope.launch {
+            player.collect { snapshot ->
+                val s = state.value
+                if (!s.endless || s.preview || profile.value == null || radioJob?.isActive == true) return@collect
+                if (snapshot.tracks.isEmpty() || snapshot.currentIndex < snapshot.tracks.size - 2) return@collect
+                radioJob = viewModelScope.launch {
+                    try {
+                        val queued = snapshot.tracks.map { it.id }.toSet()
+                        val fresh = repository.radioTracks().filter { it.mid !in queued }
+                        if (fresh.isNotEmpty()) {
+                            songBook.putAll(fresh.associateBy { it.mid })
+                            playback.append(fresh.map(::resolved))
+                        }
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                    }
+                    delay(5_000)
+                }
+            }
+        }
+        viewModelScope.launch {
+            repository.sessionExpired.collect { message ->
+                mutable.update { it.copy(library = emptyList(), liked = emptySet()) }
+                notify(message)
+            }
         }
         viewModelScope.launch {
             combine(player.map { it.current?.id }.distinctUntilChanged(), profile) { mid, user -> mid to user }
@@ -124,7 +176,14 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     }
     private fun go(destination: Destination) {
         val current = state.value.destination
+        // Album and artist pages open from a playlist page; each keeps its own way back.
+        if (current == Destination.Playlist && destination == Destination.Playlist) {
+            state.value.detail?.let { detailStack.add(it) }
+            backStack.add(current)
+            return
+        }
         if (current == destination) return
+        if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) detailStack.clear()
         if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) {
             backStack.clear()
             if (destination != Destination.Home) backStack.add(Destination.Home)
@@ -140,6 +199,13 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             if (state.value.destination == Destination.Login) cancelQr()
             val destination = backStack.removeLastOrNull() ?: Destination.Home
+            if (state.value.destination == Destination.Playlist && destination == Destination.Playlist) {
+                detailJob?.cancel()
+                detailStack.removeLastOrNull()?.let { previous ->
+                    mutable.update { it.copy(detail = previous, detailLoading = false, detailError = null) }
+                }
+                return
+            }
             mutable.update { it.copy(destination = destination,
                 topLevel = if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) destination else it.topLevel) }
         }
@@ -215,8 +281,14 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         mutable.update { it.copy(destination = Destination.Playlist, detail = PlaylistDetail(playlist, emptyList()), detailLoading = true, detailError = null) }
         detailJob = viewModelScope.launch {
             try {
-                val detail = if (state.value.preview) PlaylistDetail(playlist, PreviewContent.songs)
-                    else repository.playlist(playlist.id)
+                val id = playlist.id
+                val detail = when {
+                    state.value.preview -> PlaylistDetail(playlist, PreviewContent.songs)
+                    id.startsWith("album:") -> repository.album(Album(id.removePrefix("album:"), 0, playlist.title, playlist.creator, playlist.cover))
+                    id.startsWith("artist:") -> repository.artist(Artist(id.removePrefix("artist:"), 0, playlist.title, playlist.cover))
+                    id == "purchased" -> repository.purchasedSongs().let { PlaylistDetail(playlist.copy(trackCount = it.size), it) }
+                    else -> repository.playlist(id)
+                }
                 songBook.putAll(detail.songs.associateBy { it.mid })
                 mutable.update { it.copy(detail = detail, detailLoading = false) }
             } catch (error: Exception) {
@@ -247,7 +319,9 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             detailJob = viewModelScope.launch {
                 try {
                     val songs = repository.dailySongs()
-                    openSongs("每日推荐", songs)
+                    songBook.putAll(songs.associateBy { it.mid })
+                    mutable.update { it.copy(detail = PlaylistDetail(Playlist("local-list", "每日推荐",
+                        songs.firstOrNull()?.cover.orEmpty(), trackCount = songs.size), songs), detailLoading = false) }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     mutable.update { it.copy(detailLoading = false, detailError = readable(error)) }
@@ -255,21 +329,44 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-    fun play(songs: List<Song>, index: Int = 0, shuffle: Boolean = false) {
+    fun play(songs: List<Song>, index: Int = 0, shuffle: Boolean = false, source: String = defaultSource()) {
         if (songs.isEmpty()) return
         if (state.value.preview) { notify("设计预览不播放示例音频"); showPlayer(true); return }
         songBook.putAll(songs.associateBy { it.mid })
-        playback.setQueue(songs.map { song ->
-            val uri = if (song.mid.startsWith("content:")) song.mid else Uri.Builder()
-                .scheme("lilt").authority("song").appendPath(song.mid)
-                .appendQueryParameter("id", song.id.toString())
-                .appendQueryParameter("title", song.title)
-                .appendQueryParameter("artist", song.artist)
-                .appendQueryParameter("mediaMid", song.mediaMid)
-                .appendQueryParameter("albumMid", song.albumMid).build().toString()
-            ResolvedTrack(song.mid, song.title, song.artist, song.album, song.cover, uri)
-        }, index)
+        mutable.update { it.copy(queueSource = source) }
+        playback.setQueue(songs.map(::resolved), index)
         playback.setShuffle(shuffle)
+    }
+    fun playNext(song: Song) {
+        if (state.value.preview) { notify("设计预览不播放示例音频"); return }
+        songBook[song.mid] = song
+        playback.playNext(listOf(resolved(song)))
+        notify("将在下一首播放")
+    }
+    private fun defaultSource(): String = when (state.value.destination) {
+        Destination.Playlist -> state.value.detail?.playlist?.let { p ->
+            when {
+                p.id.startsWith("album:") -> "来自专辑 · ${p.title}"
+                p.id.startsWith("artist:") -> "来自歌手 · ${p.title}"
+                p.title == "每日推荐" -> "来自每日推荐"
+                else -> "来自歌单 · ${p.title}"
+            }
+        }.orEmpty()
+        Destination.Search -> "来自搜索 · ${state.value.query}"
+        Destination.Local -> "来自本地音乐"
+        else -> ""
+    }
+    /** The quality is part of the address, so cached audio of another quality is not reused. */
+    private fun resolved(song: Song): ResolvedTrack {
+        val uri = if (song.mid.startsWith("content:")) song.mid else Uri.Builder()
+            .scheme("lilt").authority("song").appendPath(song.mid)
+            .appendQueryParameter("id", song.id.toString())
+            .appendQueryParameter("title", song.title)
+            .appendQueryParameter("artist", song.artist)
+            .appendQueryParameter("mediaMid", song.mediaMid)
+            .appendQueryParameter("albumMid", song.albumMid)
+            .appendQueryParameter("quality", state.value.quality).build().toString()
+        return ResolvedTrack(song.mid, song.title, song.artist, song.album, song.cover, uri)
     }
     fun currentSong(): Song? = songBook[player.value.current?.id] ?: if (state.value.preview) PreviewContent.songs.first() else null
     fun toggleLike(song: Song? = currentSong()) {
@@ -302,6 +399,132 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    fun refreshMembership() {
+        if (profile.value == null || state.value.preview) return
+        viewModelScope.launch {
+            runCatching { repository.membership() }.onSuccess { m -> mutable.update { it.copy(membership = m) } }
+        }
+    }
+    fun openAlbum(album: Album) = openPlaylist(Playlist("album:${album.mid}", album.title, album.cover, album.artist))
+    fun openArtist(artist: Artist) = openPlaylist(Playlist("artist:${artist.mid}", artist.name, artist.cover))
+    fun playPlaylist(playlist: Playlist) {
+        if (state.value.preview) { play(PreviewContent.songs); return }
+        viewModelScope.launch {
+            try {
+                val detail = repository.playlist(playlist.id)
+                if (detail.songs.isEmpty()) { notify("歌单里还没有歌曲"); return@launch }
+                play(detail.songs, source = "来自歌单 · ${playlist.title}")
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+            }
+        }
+    }
+    fun playArtist(artist: Artist) {
+        if (state.value.preview) { play(PreviewContent.songs); return }
+        viewModelScope.launch {
+            try {
+                val detail = repository.artist(artist)
+                if (detail.songs.isEmpty()) { notify("暂时没有可播放的歌曲"); return@launch }
+                play(detail.songs, source = "来自歌手 · ${detail.playlist.title}")
+                showPlayer(true)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+            }
+        }
+    }
+    fun openLikedAlbums() = openAlbums("收藏的专辑") { repository.likedAlbums() }
+    fun openPurchased() {
+        if (profile.value == null) { navigate(Destination.Login); return }
+        openPlaylist(Playlist("purchased", "已购音乐"))
+    }
+    private fun openAlbums(title: String, load: suspend () -> List<Album>) {
+        if (profile.value == null && !state.value.preview) { navigate(Destination.Login); return }
+        go(Destination.Albums)
+        mutable.update { it.copy(collectionTitle = title, collectionAlbums = emptyList(), collectionLoading = true, collectionError = null) }
+        detailJob?.cancel()
+        detailJob = viewModelScope.launch {
+            try {
+                val albums = load()
+                mutable.update { it.copy(collectionAlbums = albums, collectionLoading = false) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                mutable.update { it.copy(collectionLoading = false, collectionError = readable(error)) }
+            }
+        }
+    }
+    fun addToPlaylist(song: Song, playlist: Playlist) {
+        viewModelScope.launch {
+            try {
+                repository.addToPlaylist(song, playlist)
+                notify("已添加到「${playlist.title}」")
+                refreshLibrary()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+            }
+        }
+    }
+    fun setEndless(enabled: Boolean) {
+        if (enabled && profile.value == null && !state.value.preview) { notify("登录后可在播完时继续播放私人电台"); return }
+        preferences.edit().putBoolean("endless", enabled).apply()
+        mutable.update { it.copy(endless = enabled) }
+        notify(if (enabled) "播完后将继续播放私人电台" else "已关闭电台续播")
+    }
+    /** Pauses after [minutes]; 0 turns the timer off. */
+    fun setSleepTimer(minutes: Int) {
+        sleepJob?.cancel()
+        if (minutes <= 0) { mutable.update { it.copy(sleepAt = 0) }; notify("已关闭睡眠定时"); return }
+        val at = System.currentTimeMillis() + minutes * 60_000L
+        mutable.update { it.copy(sleepAt = at) }
+        sleepJob = viewModelScope.launch {
+            delay(at - System.currentTimeMillis())
+            playback.pause()
+            mutable.update { it.copy(sleepAt = 0) }
+            notify("睡眠定时已暂停播放")
+        }
+        notify("将在 $minutes 分钟后暂停播放")
+    }
+    fun setNormalize(enabled: Boolean) {
+        preferences.edit().putBoolean("normalize", enabled).apply()
+        mutable.update { it.copy(normalize = enabled) }
+    }
+    fun setFade(enabled: Boolean) {
+        preferences.edit().putBoolean("fade", enabled).apply()
+        mutable.update { it.copy(fade = enabled) }
+    }
+    fun setWordLyrics(enabled: Boolean) {
+        preferences.edit().putBoolean("word_lyrics", enabled).apply()
+        mutable.update { it.copy(wordLyrics = enabled) }
+        loadLyrics()
+    }
+    fun setDownloadQuality(quality: String) {
+        preferences.edit().putString("download_quality", quality).apply()
+        mutable.update { it.copy(downloadQuality = quality) }
+    }
+    fun setCacheLimit(megabytes: Long) {
+        preferences.edit().putLong("cache_limit_mb", megabytes).apply()
+        mutable.update { it.copy(cacheLimitMb = megabytes) }
+        refreshCacheUsage()
+    }
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun refreshCacheUsage() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val used = runCatching { getApplication<LiltApplication>().audioCache.usedBytes }.getOrDefault(0)
+            mutable.update { it.copy(cacheUsed = used) }
+        }
+    }
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun clearCaches(clearImages: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { getApplication<LiltApplication>().audioCache.clear() }
+            withContext(Dispatchers.Main) { clearImages() }
+            val used = runCatching { getApplication<LiltApplication>().audioCache.usedBytes }.getOrDefault(0)
+            mutable.update { it.copy(cacheUsed = used) }
+            notify("缓存已清除")
+        }
+    }
     fun loadLyrics(song: Song? = currentSong()) {
         song ?: return
         lyricJob?.cancel()
@@ -312,7 +535,8 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         lyricJob = viewModelScope.launch {
             mutable.update { it.copy(lyrics = Lyrics(), lyricsLoading = true, lyricsError = null) }
             try {
-                val result = if (state.value.preview) PreviewContent.lyrics else repository.lyrics(song)
+                val result = (if (state.value.preview) PreviewContent.lyrics else repository.lyrics(song))
+                    .let { if (state.value.wordLyrics) it else Lyrics(it.lines.map { line -> line.copy(words = emptyList()) }) }
                 mutable.update { it.copy(lyrics = result, lyricsLoading = false) }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -322,13 +546,16 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun refreshQr(provider: String = state.value.provider) {
         cancelQr()
-        mutable.update { it.copy(provider = provider, qr = null, qrBusy = true, qrMessage = "正在获取二维码", qrState = LoginState.WAITING) }
+        val app = if (provider == "wechat") "微信" else "QQ"
+        mutable.update { it.copy(provider = provider, qr = null, qrBusy = true,
+            qrMessage = if (provider == "wechat") "正在准备微信登录" else "正在获取二维码", qrState = LoginState.WAITING) }
         qrJob = viewModelScope.launch {
             try {
                 val qr = repository.createQr(provider)
-                mutable.update { it.copy(qr = qr, qrBusy = false, qrMessage = "请使用手机${if (provider == "qq") "QQ" else "微信"}扫码") }
+                mutable.update { it.copy(qr = qr, qrBusy = false, qrMessage = "请使用手机${app}扫码") }
                 while (isActive) {
-                    delay(1800)
+                    // WeChat holds its status poll open until something changes; QQ answers at once.
+                    delay(if (provider == "wechat") 300 else 1800)
                     val result = repository.pollQr(qr)
                     mutable.update { it.copy(qrState = result.state, qrMessage = result.message.ifBlank { "等待扫码 · 二维码 2 分钟内有效" }) }
                     if (result.state == LoginState.SUCCESS) {
@@ -337,7 +564,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                         notify("登录成功")
                         return@launch
                     }
-                    if (result.state == LoginState.EXPIRED || result.state == LoginState.UNSUPPORTED) return@launch
+                    if (result.state == LoginState.EXPIRED) return@launch
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -375,7 +602,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         if (state.value.preview) { notify("设计预览不下载示例音频"); return }
         viewModelScope.launch {
             try {
-                val url = repository.songUrl(song, state.value.quality)
+                val url = repository.songUrl(song, state.value.downloadQuality)
                 val filename = "${song.artist} - ${song.title}".replace(Regex("[\\\\/:*?\"<>|]"), "_") +
                     if (url.substringBefore("?").endsWith(".flac")) ".flac" else ".mp3"
                 val request = DownloadManager.Request(Uri.parse(url))
@@ -405,15 +632,21 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         val array = JSONArray(preferences.getString(key, "[]"))
         (0 until array.length()).map {
             val obj = array.getJSONObject(it)
+            val artists = obj.optJSONArray("artists")?.let { list ->
+                (0 until list.length()).mapNotNull(list::optJSONObject)
+                    .map { a -> Artist(a.optString("mid"), a.optLong("id"), a.optString("name"), a.optString("cover")) }
+            }.orEmpty()
             Song(obj.getString("mid"), obj.optLong("id"), obj.getString("title"), obj.optString("artist"),
-                obj.optString("album"), obj.optString("cover"), obj.optLong("durationMs"), obj.optString("mediaMid"), obj.optString("albumMid"))
+                obj.optString("album"), obj.optString("cover"), obj.optLong("durationMs"), obj.optString("mediaMid"),
+                obj.optString("albumMid"), artists)
         }
     }.getOrDefault(emptyList())
     private fun saveSongs(key: String, songs: List<Song>) {
         val array = JSONArray()
         songs.forEach { song -> array.put(JSONObject().put("mid", song.mid).put("id", song.id).put("title", song.title)
             .put("artist", song.artist).put("album", song.album).put("cover", song.cover).put("durationMs", song.durationMs)
-            .put("mediaMid", song.mediaMid).put("albumMid", song.albumMid)) }
+            .put("mediaMid", song.mediaMid).put("albumMid", song.albumMid)
+            .put("artists", JSONArray(song.artists.map { JSONObject().put("mid", it.mid).put("id", it.id).put("name", it.name).put("cover", it.cover) }))) }
         preferences.edit().putString(key, array.toString()).apply()
     }
     private fun readable(error: Throwable) = error.message?.takeIf { it.length < 180 } ?: "连接失败，请检查网络后重试"
@@ -444,7 +677,8 @@ private object PreviewContent {
     val lyrics = Lyrics(listOf(
         LyricLine(0, "刮风这天 我试过握着你手"),
         LyricLine(20000, "但偏偏 雨渐渐\n大到我看你不见"),
-        LyricLine(40000, "还要多久 我才能在你身边"),
+        LyricLine(40000, "还要多久 我才能在你身边", endMs = 66000,
+            words = "还要多久 我才能在你身边".mapIndexed { i, c -> LyricWord(c.toString(), 54000L + i * 1000, 55000L + i * 1000) }),
         LyricLine(65000, "等到放晴的那天\n也许我会比较好一点"),
         LyricLine(90000, "从前从前 有个人爱你很久"),
         LyricLine(120000, "但偏偏 风渐渐\n把距离吹得好远"),

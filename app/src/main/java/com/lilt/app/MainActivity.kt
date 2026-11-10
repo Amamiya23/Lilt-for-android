@@ -25,6 +25,8 @@ class MainActivity : ComponentActivity() {
             when (intent.getStringExtra("preview_screen")) {
                 "player" -> model.showPlayer(true)
                 "lyrics" -> { model.showPlayer(true); model.setPlayerPanel(PlayerPanel.Lyrics) }
+                "queue" -> { model.showPlayer(true); model.setPlayerPanel(PlayerPanel.Queue) }
+                "login" -> model.navigate(Destination.Login)
                 "search" -> model.search("周杰伦")
                 "library" -> model.navigate(Destination.Library)
                 "settings" -> model.navigate(Destination.Settings)

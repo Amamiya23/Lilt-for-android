@@ -8,14 +8,21 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.Dispatcher
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -40,9 +47,14 @@ import kotlin.math.abs
 /** QQ Music's own protocol; all account credentials stay inside this app. */
 class QqMusicRepository(context: Context) {
     private val store = MusicSessionStore(context.applicationContext)
-    @Volatile private var session: MusicSession? = store.read()
-    private val mutableProfile = MutableStateFlow(session?.takeIf { it.valid }?.profile)
+    // Expired credentials are retained while their refresh material can renew them.
+    @Volatile private var session: MusicSession? = store.read()?.takeIf { it.valid || it.canRefresh }
+    private val mutableProfile = MutableStateFlow(session?.profile)
     val profile: StateFlow<Profile?> = mutableProfile.asStateFlow()
+    private val expiredEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    /** Emits when the service refuses the saved login and a new scan is required. */
+    val sessionExpired: SharedFlow<String> = expiredEvents.asSharedFlow()
+    private val renewal = Mutex()
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
@@ -50,35 +62,47 @@ class QqMusicRepository(context: Context) {
         .build()
     private val authClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val qrLogins = ConcurrentHashMap<String, LoginQr>()
+    private val wechatLogins = ConcurrentHashMap<String, WechatLogin>()
     private val tracks = ConcurrentHashMap<String, Song>()
     private val random = SecureRandom()
 
+    /** GetLoginUserInfo does not return the account ID; the credential's ID is kept. */
     suspend fun refreshProfile() {
         val signed = signedSession()
-        val info = rpc("music.UserInfo.userInfoServer", "GetLoginUserInfo", json())
-            .optJSONObject("info") ?: throw MusicApiException("QQ 音乐未返回账号资料")
-        val updated = signed.copy(
-            name = info.text("nick", "nickname").ifBlank { signed.name },
-            avatar = info.text("headurl", "logo", "avatarUrl", "avatar").https().ifBlank { signed.avatar },
+        val info = try {
+            rpc("music.UserInfo.userInfoServer", "GetLoginUserInfo", json())
+        } catch (error: MusicApiException) {
+            // A refused credential without refresh material cannot recover.
+            if (error.loginRejected && !signed.canRefresh) expire(signed)
+            throw error
+        }.optJSONObject("info") ?: throw MusicApiException("QQ 音乐未返回账号资料")
+        val current = session?.takeIf { it.musicId == signed.musicId } ?: return
+        val updated = current.copy(
+            name = info.text("nick", "nickname").ifBlank { current.name },
+            avatar = info.text("headurl", "logo", "avatarUrl", "avatar").https().ifBlank { current.avatar },
         )
-        if (session != signed) return
-        withContext(Dispatchers.IO) { store.write(updated) }
-        session = updated
-        mutableProfile.value = updated.profile
+        if (updated == current) return
+        renewal.withLock {
+            if (session != current) return
+            withContext(Dispatchers.IO) { store.write(updated) }
+            session = updated
+            mutableProfile.value = updated.profile
+        }
     }
 
     suspend fun home(): HomeFeed = coroutineScope {
-        val signed = session?.takeIf { it.valid }
+        val signed = optional { activeSession() }.getOrNull()
         val featured = async {
             optional {
                 if (signed == null) featuredPlaylists()
-                else optional { personalizedPlaylists(signed) }.getOrNull().orEmpty().ifEmpty { featuredPlaylists() }
+                else optional { personalizedPlaylists() }.getOrNull().orEmpty().ifEmpty { featuredPlaylists() }
             }
         }
         val top = async { optional { charts() } }
         val daily = async {
             if (signed == null) emptyList() else optional { dailySongs() }.getOrDefault(emptyList())
         }
+        val shelves = async { if (signed == null) emptyList() else optional { songShelves() }.getOrDefault(emptyList()) }
         val playlists = featured.await()
         val charts = top.await()
         if (playlists.isFailure && charts.isFailure) throw playlists.exceptionOrNull()!!
@@ -90,7 +114,7 @@ class QqMusicRepository(context: Context) {
                 first?.let { playlist(it.id).songs.take(12) }.orEmpty()
             }.getOrDefault(emptyList())
         }
-        HomeFeed(songs, lists, chartLists)
+        HomeFeed(songs, lists, chartLists, shelves.await())
     }
 
     suspend fun dailySongs(): List<Song> {
@@ -106,14 +130,15 @@ class QqMusicRepository(context: Context) {
         if (keyword.isEmpty()) return SearchResult()
         require(keyword.codePointCount(0, keyword.length) <= 60) { "搜索内容不能超过 60 个字" }
         require(type in listOf(0, 1, 2, 3)) { "不支持的搜索类型" }
-        val s = session?.takeIf { it.valid }
-        val comm = json("ct" to 11, "cv" to 0, "uin" to (s?.musicId ?: "0"), "format" to "json")
-        s?.let { comm.put("qq", it.musicId).put("authst", it.musicKey).put("tmeLoginType", it.loginType) }
         return try {
             val data = rpc(
                 "music.search.SearchCgiService", "DoSearchForQQMusicDesktop",
                 json("query" to keyword, "search_type" to type, "num_per_page" to 20, "page_num" to 1),
-                comm, userAgent = "Mozilla/5.0",
+                { s ->
+                    json("ct" to 11, "cv" to 0, "uin" to (s?.musicId ?: "0"), "format" to "json").apply {
+                        s?.let { put("qq", it.musicId).put("authst", it.musicKey).put("tmeLoginType", it.loginType) }
+                    }
+                }, userAgent = "Mozilla/5.0",
             )
             MusicParsers.search(data, type).also { remember(it.songs) }
         } catch (error: Exception) {
@@ -139,7 +164,7 @@ class QqMusicRepository(context: Context) {
             val data = rpc(
                 "musicToplist.ToplistInfoServer", "GetDetail",
                 json("topid" to topId, "offset" to 0, "num" to 100, "period" to ""),
-                json("ct" to 24, "cv" to 0),
+                { json("ct" to 24, "cv" to 0) },
             )
             val info = data.optJSONObject("data") ?: throw MusicApiException("榜单信息不完整")
             val list = MusicParsers.songs(data.optJSONArray("songInfoList"))
@@ -169,17 +194,17 @@ class QqMusicRepository(context: Context) {
                     )
                 }
             }
-            if (session?.valid != true) throw MusicApiException("暂时无法读取这张歌单")
+            if (session == null) throw MusicApiException("暂时无法读取这张歌单")
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            if (session?.valid != true || (error is MusicApiException && error.serviceCode != null && error.serviceCode != 10)) throw error
+            if (session == null || (error is MusicApiException && error.serviceCode != null && error.serviceCode != 10)) throw error
         }
         return authenticatedPlaylist(numericId)
     }
 
     suspend fun songUrl(song: Song, quality: String = "standard"): String {
         val complete = if (song.mediaMid.isBlank()) songDetails(song) else song
-        val signed = session?.takeIf { it.valid }
+        val signed = activeSession()
         val qualities = buildList {
             if (signed != null && quality in listOf("lossless", "hires")) add("F000" to "flac")
             if (signed != null && quality in listOf("hq", "higher", "exhigh", "lossless", "hires")) add("M800" to "mp3")
@@ -218,15 +243,50 @@ class QqMusicRepository(context: Context) {
         throw MusicApiException("QQ 音乐未提供播放链接，可能需要登录或相应会员权限")
     }
 
+    /** Prefers QQ's real word timings, with the old LRC service as a fallback. */
     suspend fun lyrics(song: Song): Lyrics {
+        optional { playLyrics(song.mid) }.getOrNull()?.let { return it }
         val response = cgi("/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
             mapOf("songmid" to song.mid, "pcachetime" to song.id.toString()))
-        fun decode(key: String): String = response.text(key).takeIf { it.isNotBlank() }?.let {
-            try { String(Base64.decode(it, Base64.DEFAULT), Charsets.UTF_8) }
-            catch (error: IllegalArgumentException) { throw MusicApiException("歌词数据无法解析", cause = error) }
-        }.orEmpty()
-        return MusicParsers.lyrics(decode("lyric"), decode("trans"))
+        val original = base64Text(response.text("lyric"))
+        val translation = base64Text(response.text("trans"))
+            .ifBlank { optional { lyricTranslation(song.mid) }.getOrDefault("") }
+        return MusicParsers.lyrics(original, translation)
     }
+
+    private suspend fun playLyrics(mid: String): Lyrics {
+        // Signed in, the account identity is used as elsewhere; the endpoint also works anonymously.
+        val signed = activeSession() != null
+        val data = rpc("music.musichallSong.PlayLyricInfo", "GetPlayLyricInfo",
+            json("songMID" to mid, "crypt" to 1, "ct" to 24, "cv" to 0, "lver" to 0, "qrc" to 1, "trans" to 1, "roma" to 0),
+            if (signed) DEFAULT_COMM else { _ -> json("ct" to 24, "cv" to 0, "uin" to "0", "format" to "json") },
+            userAgent = if (signed) USER_AGENT else "Mozilla/5.0", cookie = signed)
+        val original = QrcDecoder.decode(data.text("lyric"))
+        // Verify the payload itself: version fields alone do not prove word timing.
+        val qrc = original.takeIf { MusicParsers.qrc(it).isNotEmpty() }.orEmpty()
+        if (qrc.isEmpty() && !LYRIC_TIME.containsMatchIn(original)) throw MusicApiException("QQ 音乐未返回可读歌词")
+        // A bad translation must not discard the original's real word timings.
+        val translation = optional { QrcDecoder.decode(data.text("trans")) }.getOrNull()
+            ?.takeIf { it.isEmpty() || LYRIC_TIME.containsMatchIn(it) }
+            ?: optional { lyricTranslation(mid) }.getOrDefault("")
+        return MusicParsers.lyrics(if (qrc.isEmpty()) original else "", translation, qrc)
+    }
+
+    /** The newer endpoint supplies base64 LRC translations with crypt=0, which the old one often lacks. */
+    private suspend fun lyricTranslation(mid: String): String {
+        val data = rpc("music.musichallSong.PlayLyricInfo", "GetPlayLyricInfo",
+            json("songMID" to mid, "songName" to "", "singerName" to "", "albumName" to "", "interval" to 0,
+                "crypt" to 0, "ct" to 19, "cv" to 2111, "lrc_t" to 0, "qrc" to 0, "qrc_t" to 0,
+                "roma" to 0, "roma_t" to 0, "trans" to 1, "trans_t" to 0, "type" to 0),
+            { json("ct" to 11, "cv" to "1003006", "v" to "1003006", "tmeAppID" to "qqmusiclight",
+                "nettype" to "NETWORK_WIFI", "udid" to "0", "uid" to "0") },
+            userAgent = "okhttp/3.14.9", cookie = false, extraHeaders = mapOf("Cookie" to "tmeLoginType=-1"))
+        return base64Text(data.text("trans")).takeIf { LYRIC_TIME.containsMatchIn(it) }.orEmpty()
+    }
+
+    private fun base64Text(value: String): String = if (value.isBlank()) "" else try {
+        String(Base64.decode(value, Base64.DEFAULT), Charsets.UTF_8)
+    } catch (error: IllegalArgumentException) { throw MusicApiException("歌词数据无法解析", cause = error) }
 
     suspend fun userPlaylists(): List<Playlist> {
         val s = signedSession()
@@ -275,9 +335,7 @@ class QqMusicRepository(context: Context) {
     }
 
     suspend fun createQr(provider: String): LoginQr {
-        if (!provider.equals("qq", true)) {
-            return LoginQr(id = "unsupported", provider = provider)
-        }
+        if (provider.equals("wechat", true)) return createWechatQr()
         val query = mapOf(
             "appid" to "716027609", "e" to "2", "l" to "M", "s" to "3", "d" to "72",
             "v" to "4", "t" to nonce(8), "daid" to "383", "pt_3rd_aid" to "100497308", "u1" to LOGIN_JUMP,
@@ -295,11 +353,11 @@ class QqMusicRepository(context: Context) {
     }
 
     suspend fun pollQr(qr: LoginQr): LoginPoll {
-        if (!qr.provider.equals("qq", true)) return LoginPoll(LoginState.UNSUPPORTED, "安卓版暂不支持微信登录，请使用 QQ 扫码")
         if (qrLogins[qr.id] == null || System.currentTimeMillis() >= qr.expiresAt) {
-            qrLogins.remove(qr.id)
+            cancelQr(qr)
             return LoginPoll(LoginState.EXPIRED, "二维码已失效，点按刷新")
         }
+        wechatLogins[qr.id]?.let { return pollWechat(qr, it) }
         val url = url("https://xui.ptlogin2.qq.com/ssl/ptqrlogin", mapOf(
             "u1" to LOGIN_JUMP, "from_ui" to "1", "aid" to "716027609", "daid" to "383",
             "pt_3rd_aid" to "100497308", "ptqrtoken" to hash33(qr.id, 0).toString(),
@@ -310,28 +368,103 @@ class QqMusicRepository(context: Context) {
             "66" -> LoginPoll(LoginState.WAITING)
             "67" -> LoginPoll(LoginState.SCANNED, "请在手机 QQ 上确认登录")
             "65" -> { qrLogins.remove(qr.id); LoginPoll(LoginState.EXPIRED, "二维码已失效，点按刷新") }
-            "0" -> {
-                val credential = exchangeQq(values[2])
-                currentCoroutineContext().ensureActive()
-                if (!qrLogins.containsKey(qr.id)) return LoginPoll(LoginState.EXPIRED, "登录已取消")
-                withContext(Dispatchers.IO) { store.write(credential) }
-                session = credential
-                mutableProfile.value = credential.profile
-                qrLogins.remove(qr.id)
-                LoginPoll(LoginState.SUCCESS, "登录成功", credential.profile)
-            }
+            "0" -> finishQr(qr, exchangeQq(values[2]))
             else -> throw MusicApiException("QQ 登录服务暂不可用，请刷新重试", values[0].toIntOrNull())
         }
     }
 
+    /** A closed or replaced QR can no longer sign in, even if its exchange completes later. */
+    private suspend fun finishQr(qr: LoginQr, credential: MusicSession): LoginPoll {
+        currentCoroutineContext().ensureActive()
+        renewal.withLock {
+            if (!qrLogins.containsKey(qr.id)) return LoginPoll(LoginState.EXPIRED, "登录已取消")
+            withContext(Dispatchers.IO) { store.write(credential) }
+            session = credential
+            mutableProfile.value = credential.profile
+        }
+        cancelQr(qr)
+        return LoginPoll(LoginState.SUCCESS, "登录成功", credential.profile)
+    }
+
+    /** The WeChat web login keeps its cookies private to one QR; the code is exchanged with a registered device. */
+    private suspend fun createWechatQr(): LoginQr {
+        val device = bootstrapDevice()
+        val jar = object : CookieJar {
+            private val cookies = mutableListOf<Cookie>()
+            @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                this.cookies.removeAll { old -> cookies.any { it.name == old.name && it.domain == old.domain && it.path == old.path } }
+                this.cookies += cookies
+            }
+            @Synchronized override fun loadForRequest(url: HttpUrl) = cookies.filter { it.matches(url) }
+        }
+        // An unchanged QR holds its status poll open for up to about 25 seconds.
+        val http = authClient.newBuilder().dispatcher(Dispatcher()).cookieJar(jar).readTimeout(30, TimeUnit.SECONDS).callTimeout(35, TimeUnit.SECONDS).build()
+        val connect = url(WECHAT_CONNECT, mapOf(
+            "appid" to WECHAT_APP_ID, "redirect_uri" to "https://y.qq.com/portal/wx_redirect.html?login_type=2&surl=https://y.qq.com/",
+            "response_type" to "code", "scope" to "snsapi_login", "state" to "STATE",
+            "href" to "https://y.qq.com/mediastyle/music_v17/src/css/popup_wechat.css#wechat_redirect",
+        ))
+        val page = send(connect, auth = true, http = http, expect = 200)
+        val uuid = MusicParsers.wechatUuid(String(page.bytes, Charsets.UTF_8)) ?: throw MusicApiException("微信未返回二维码，请刷新重试")
+        val image = send("https://open.weixin.qq.com/connect/qrcode/$uuid".toHttpUrl(),
+            headers = mapOf("Referer" to WECHAT_CONNECT), auth = true, http = http, expect = 200).bytes
+        if (!isImage(image)) throw MusicApiException("微信返回的二维码图片无效，请刷新重试")
+        val qr = LoginQr(nonce(24), "wechat", imageBytes = image, expiresAt = System.currentTimeMillis() + 120_000)
+        pruneQr()
+        wechatLogins[qr.id] = WechatLogin(http, uuid, device)
+        qrLogins[qr.id] = qr
+        return qr
+    }
+
+    private suspend fun pollWechat(qr: LoginQr, login: WechatLogin): LoginPoll = login.lock.withLock {
+        val waiting = if (login.scanned) LoginPoll(LoginState.SCANNED, "请在微信上确认登录") else LoginPoll(LoginState.WAITING)
+        val query = mutableMapOf("uuid" to login.uuid, "_" to System.currentTimeMillis().toString())
+        if (login.scanned) query["last"] = "404"
+        val reply = try {
+            send(url("https://lp.open.weixin.qq.com/connect/l/qrconnect", query),
+                headers = mapOf("Referer" to "https://open.weixin.qq.com/"), auth = true, http = login.http, expect = 200)
+        } catch (error: MusicApiException) {
+            if (error.cause is java.io.InterruptedIOException) return waiting
+            throw error
+        }
+        val (status, code) = MusicParsers.wechatStatus(String(reply.bytes, Charsets.UTF_8))
+            ?: throw MusicApiException("微信登录状态无法解析，请刷新重试")
+        when (status) {
+            "408" -> waiting
+            "404" -> { login.scanned = true; LoginPoll(LoginState.SCANNED, "请在微信上确认登录") }
+            "402", "403" -> { cancelQr(qr); LoginPoll(LoginState.EXPIRED, "二维码已失效，点按刷新") }
+            "405" -> {
+                if (code.isEmpty()) throw MusicApiException("微信未返回授权信息，请刷新重试")
+                finishQr(qr, exchangeLogin(json("code" to code, "strAppid" to WECHAT_APP_ID), login.device))
+            }
+            else -> throw MusicApiException("微信登录服务暂不可用，请刷新重试")
+        }
+    }
+
+    private class WechatLogin(val http: OkHttpClient, val uuid: String, val device: LoginDevice) {
+        val lock = Mutex()
+        @Volatile var scanned = false
+    }
+
+    private fun pruneQr() {
+        val now = System.currentTimeMillis()
+        qrLogins.values.filter { it.expiresAt < now }.forEach(::cancelQr)
+    }
+
+    private fun isImage(bytes: ByteArray) = bytes.size > 8 &&
+        (bytes.copyOfRange(0, 8).contentEquals(PNG_SIGNATURE) || bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte())
+
     fun logout() {
-        qrLogins.clear()
+        qrLogins.keys.toList().forEach { cancelQr(LoginQr(it)) }
         session = null
         mutableProfile.value = null
         store.clear()
     }
 
-    fun cancelQr(qr: LoginQr) { qrLogins.remove(qr.id) }
+    fun cancelQr(qr: LoginQr) {
+        qrLogins.remove(qr.id)
+        wechatLogins.remove(qr.id)?.http?.dispatcher?.cancelAll()
+    }
 
     private suspend fun exchangeQq(redirect: String): MusicSession {
         val check = trustedLoginUrl(redirect, "ssl.ptlogin2.graph.qq.com", "/check_sig")
@@ -364,13 +497,153 @@ class QqMusicRepository(context: Context) {
             "req" to json("module" to "QQConnectLogin.LoginServer", "method" to "QQLogin", "param" to json("code" to code)),
         )
         val response = send(MUSICU.toHttpUrl(), payload.toString().toRequestBody("application/x-www-form-urlencoded".toMediaType()), auth = true)
-        val body = MusicParsers.jsonResponse(response.bytes)
-        val req = body.optJSONObject("req") ?: throw MusicApiException("QQ 音乐未返回登录结果")
-        checkStatus(body, req)
-        val data = req.optJSONObject("data") ?: throw MusicApiException("QQ 音乐未返回登录信息")
-        return MusicSession.fromJson(data).also {
-            if (!it.valid || it.loginType != 2) throw MusicApiException("QQ 音乐登录凭据无效，请重新扫码")
+        return MusicSession.fromLoginResponse(MusicParsers.jsonResponse(response.bytes), 2)
+    }
+
+    /** The account's tier (HugeVip / iVipFlag; iSuperVip is also set for green accounts) and its expiry date. */
+    suspend fun membership(): Membership {
+        val s = signedSession()
+        val info = rpc("userInfo.VipQueryServer", "SRFVipQuery_V2", json("uin_list" to listOf(s.musicId)))
+            .optJSONObject("infoMap")?.optJSONObject(s.musicId) ?: throw MusicApiException("QQ 音乐未返回会员状态")
+        val huge = info.opt("HugeVip") as? Number
+        val flag = info.opt("iVipFlag") as? Number
+        val tier = when {
+            huge == null -> VipTier.Unknown
+            huge.toInt() == 1 -> VipTier.Super
+            huge.toInt() != 0 || flag == null -> VipTier.Unknown
+            flag.toInt() == 0 -> VipTier.Free
+            flag.toInt() == 1 -> VipTier.Green
+            else -> VipTier.Unknown
         }
+        if (tier != VipTier.Green && tier != VipTier.Super) return Membership(tier)
+        val identity = optional { rpc("VipLogin.VipLoginInter", "vip_login_base", json()).optJSONObject("identity") }.getOrNull()
+        return Membership(tier, MusicParsers.membershipDate(identity?.opt(if (tier == VipTier.Green) "overdate" else "HugeVipEnd")))
+    }
+
+    /** QQ's personalized song shelves (id 207), titled by the service, with their songs fetched in one batch. */
+    suspend fun songShelves(): List<SongShelf> {
+        val s = signedSession()
+        val comm: (MusicSession?) -> JSONObject = { c ->
+            json("format" to "json", "ct" to 20, "cv" to 2276, "platform" to "wk_v17", "inCharset" to "utf-8",
+                "outCharset" to "utf-8", "notice" to 0, "needNewCode" to 1, "uin" to (c ?: s).musicId,
+                "qq" to (c ?: s).musicId, "authst" to (c ?: s).musicKey, "tmeLoginType" to (c ?: s).loginType,
+                "g_tk" to 0, "g_tk_new_20200303" to 0)
+        }
+        val shelves = mutableListOf<JSONObject>()
+        var page = 1
+        while (page <= 4) {
+            val data = try {
+                rpc("music.recommend.RecommendFeed", "get_recommend_feed", json("direction" to if (page == 1) 0 else 1,
+                    "page" to page, "s_num" to shelves.size, "v_cache" to emptyList<String>(), "v_uniq" to emptyList<String>()), comm)
+            } catch (error: MusicApiException) { if (page == 1) throw error else break }
+            val received = data.optJSONArray("v_shelf").objects()
+            shelves += received
+            if (received.isEmpty() || data.opt("load_mark")?.toString() != "0" ||
+                shelves.count { it.optInt("id") == 207 && MusicParsers.shelfSongIds(it).isNotEmpty() } >= 3) break
+            page++
+        }
+        val groups = shelves.filter { it.optInt("id") == 207 }.map { MusicParsers.shelfTitle(it) to MusicParsers.shelfSongIds(it) }
+            .filter { it.second.isNotEmpty() }
+        val ids = groups.flatMap { it.second }.distinct()
+        if (ids.isEmpty()) return emptyList()
+        val tracks = rpc("music.trackInfo.UniformRuleCtrl", "CgiGetTrackInfo",
+            json("ids" to ids, "types" to ids.map { 0 }), comm).optJSONArray("tracks")
+            ?: throw MusicApiException("QQ 音乐未返回推荐歌曲")
+        val byId = MusicParsers.songs(tracks).also(::remember).associateBy { it.id }
+        return groups.map { (title, songIds) -> SongShelf(title, songIds.mapNotNull(byId::get)) }.filter { it.songs.isNotEmpty() }
+    }
+
+    suspend fun album(album: Album): PlaylistDetail {
+        val body = cgi("/v8/fcg-bin/fcg_v8_album_info_cp.fcg",
+            if (album.mid.isNotBlank()) mapOf("albummid" to album.mid) else mapOf("albumid" to album.id.toString()))
+        val data = body.optJSONObject("data") ?: throw MusicApiException("QQ 音乐未返回专辑信息")
+        val songs = MusicParsers.songs(data.optJSONArray("list") ?: data.optJSONArray("songlist")).also(::remember)
+        val mid = data.text("mid").ifBlank { album.mid }
+        val artist = data.optJSONArray("singer").objects().joinToString(" / ") { it.text("name") }
+            .ifBlank { songs.firstOrNull()?.artist.orEmpty() }.ifBlank { album.artist }
+        val date = data.text("aDate", "time_public").take(10)
+        return PlaylistDetail(Playlist("album:$mid", data.text("name").ifBlank { album.title }, MusicParsers.cover(mid),
+            listOf(artist, date).filter(String::isNotBlank).joinToString(" · "),
+            data.number("total", "songnum").toInt().takeIf { it > 0 } ?: songs.size), songs)
+    }
+
+    suspend fun artist(artist: Artist): PlaylistDetail {
+        if (artist.mid.isBlank()) throw MusicApiException("暂时无法打开这位歌手")
+        val data = rpc("music.web_singer_info_svr", "get_singer_detail_info",
+            json("sort" to 5, "singermid" to artist.mid, "sin" to 0, "num" to 50))
+        val info = data.optJSONObject("singer_info")
+        val songs = MusicParsers.songs(data.optJSONArray("songlist")).also(::remember)
+        val counts = listOf(data.optInt("total_song").takeIf { it > 0 }?.let { "$it 首歌曲" },
+            data.optInt("total_album").takeIf { it > 0 }?.let { "$it 张专辑" }).filterNotNull().joinToString(" · ")
+        return PlaylistDetail(Playlist("artist:${artist.mid}", info?.text("name").orEmpty().ifBlank { artist.name },
+            artist.cover.ifBlank { MusicParsers.artistCover(artist.mid) }, counts, songs.size), songs)
+    }
+
+    suspend fun likedAlbums(): List<Album> {
+        val s = signedSession()
+        val albums = mutableListOf<Album>()
+        while (albums.size < 1000) {
+            val data = cgi("/fav/fcgi-bin/fcg_get_profile_order_asset.fcg", mapOf("ct" to "20", "cid" to "205360956",
+                "userid" to s.musicId, "reqtype" to "2", "sin" to "${albums.size}", "ein" to "${albums.size + 99}"))
+                .optJSONObject("data") ?: throw MusicApiException("QQ 音乐未返回收藏的专辑")
+            val total = data.optInt("totalalbum", -1).takeIf { it >= 0 } ?: throw MusicApiException("QQ 音乐未返回收藏的专辑")
+            val page = data.optJSONArray("albumlist").objects().mapNotNull(MusicParsers::libraryAlbum)
+            albums += page
+            if (page.isEmpty() || albums.size >= total) break
+        }
+        return albums
+    }
+
+    suspend fun purchasedSongs(): List<Song> {
+        val s = signedSession()
+        val tk = hash33(s.musicKey, 5381).toString()
+        val songs = mutableListOf<Song>()
+        while (songs.size < 2000) {
+            val data = cgi("/shop/fcgi-bin/fcg_get_order", mapOf("from" to "1", "cmd" to "sales_album", "type" to "2",
+                "uin" to s.musicId, "start" to "${songs.size}", "num" to "100", "platform" to "yqq", "ct" to "24",
+                "cv" to "4747474", "inCharset" to "utf-8", "notice" to "0", "needNewCode" to "1", "g_tk" to tk,
+                "g_tk_new_20200303" to tk)).optJSONObject("data") ?: throw MusicApiException("QQ 音乐未返回已购音乐")
+            checkInnerStatus(data)
+            val total = data.optInt("total", -1).takeIf { it >= 0 } ?: throw MusicApiException("QQ 音乐未返回已购音乐")
+            val page = MusicParsers.songs(data.optJSONArray("songlist"))
+            songs += page
+            if (page.isEmpty() || songs.size >= total) break
+        }
+        return songs.also(::remember)
+    }
+
+    /** Only ordinary playlists this account created can be edited; system directories (201 liked, 202 daily) cannot. */
+    suspend fun addToPlaylist(song: Song, playlist: Playlist) {
+        val s = signedSession()
+        val entry = rpc("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", json("uin" to s.musicId))
+            .optJSONArray("v_playlist").objects().singleOrNull { it.number("tid").toString() == playlist.id }
+        val dir = entry?.optInt("dirId") ?: 0
+        if (entry == null || dir !in 1 until 200 || entry.optInt("dirType") != 0 ||
+            entry.text("uin").let { it.isNotEmpty() && it != s.musicId }) throw MusicApiException("只能添加到自己创建的普通歌单")
+        val result = rpc("music.musicasset.PlaylistDetailWrite", "AddSonglist",
+            json("dirId" to dir, "v_songInfo" to listOf(json("songId" to song.id, "songType" to 0))))
+        val confirmed = result.optJSONObject("result")
+        if (result.optInt("retCode", -1) != 0 || confirmed == null ||
+            confirmed.number("tid").toString() != playlist.id || confirmed.optInt("dirId") != dir) {
+            throw MusicApiException("QQ 音乐未确认添加，请稍后在歌单中查看")
+        }
+    }
+
+    /** The personal FM, used to continue an endless queue. */
+    suspend fun radioTracks(): List<Song> {
+        signedSession()
+        val data = rpc("music.radioProxy.MbTrackRadioSvr", "get_radio_track", json("id" to 99, "firstplay" to 1, "num" to 15))
+        return MusicParsers.songs(data.optJSONArray("tracks")).also(::remember)
+    }
+
+    /** A track's measured loudness (gain dB, linear peak); a track without one plays at unity. */
+    suspend fun loudness(mid: String): Pair<Double, Double> {
+        val data = rpc("music.pf_song_detail_svr", "get_song_detail_yqq", json("song_mid" to mid),
+            { json("ct" to 24, "cv" to 0, "uin" to "0", "format" to "json") }, userAgent = "Mozilla/5.0", cookie = false)
+        val track = data.optJSONObject("track_info") ?: throw MusicApiException("QQ 音乐未返回歌曲信息")
+        if (track.text("mid") != mid) throw MusicApiException("QQ 音乐返回的歌曲信息不一致")
+        val volume = track.optJSONObject("volume") ?: return 0.0 to 0.0
+        return volume.optDouble("gain", 0.0) to volume.optDouble("peak", 0.0)
     }
 
     private suspend fun featuredPlaylists(): List<Playlist> {
@@ -385,11 +658,11 @@ class QqMusicRepository(context: Context) {
         }
     }
 
-    private suspend fun personalizedPlaylists(s: MusicSession): List<Playlist> {
+    private suspend fun personalizedPlaylists(): List<Playlist> {
         val data = rpc(
             "music.recommend.RecommendFeed", "get_recommend_feed",
             json("direction" to 0, "page" to 1, "s_num" to 0, "v_cache" to emptyList<String>()),
-            json("ct" to 20, "cv" to 13020008, "qq" to s.musicId, "authst" to s.musicKey, "tmeLoginType" to s.loginType),
+            { s -> json("ct" to 20, "cv" to 13020008, "qq" to s?.musicId, "authst" to s?.musicKey, "tmeLoginType" to s?.loginType) },
         )
         return data.optJSONArray("v_shelf").objects()
             .flatMap { it.optJSONArray("v_niche").objects() }
@@ -402,13 +675,14 @@ class QqMusicRepository(context: Context) {
     }
 
     private suspend fun charts(): List<Playlist> {
-        val data = rpc("musicToplist.ToplistInfoServer", "GetAll", json(), json("ct" to 24, "cv" to 0))
+        val data = rpc("musicToplist.ToplistInfoServer", "GetAll", json(), { json("ct" to 24, "cv" to 0) })
         val groups = data.optJSONArray("group") ?: throw MusicApiException("QQ 音乐未返回排行榜")
         return groups.objects().flatMap { it.optJSONArray("toplist").objects() }
             .filter { it.optLong("recType") == 10005L && it.optLong("topId") > 0 }
             .map { Playlist("chart:${it.optLong("topId")}", it.text("title"),
                 it.text("headPicUrl", "frontPicUrl", "musichallPicUrl").https(),
-                trackCount = it.optInt("totalNum"), playCount = it.optLong("listenNum")) }
+                trackCount = it.optInt("totalNum"), playCount = it.optLong("listenNum"),
+                preview = it.optJSONArray("song").objects().map { song -> song.text("title") to song.text("singerName") }) }
     }
 
     private suspend fun authenticatedPlaylist(id: Long): PlaylistDetail {
@@ -450,23 +724,128 @@ class QqMusicRepository(context: Context) {
         return parsed
     }
 
-    private fun signedSession(): MusicSession = session?.takeIf { it.valid }
-        ?: throw MusicApiException("请先登录 QQ 音乐")
+    private suspend fun signedSession(): MusicSession = activeSession() ?: throw MusicApiException("请先登录 QQ 音乐")
+
+    /** The usable credential, renewing a locally expired musickey before an authenticated request. */
+    private suspend fun activeSession(): MusicSession? {
+        val s = session ?: return null
+        return when {
+            s.valid -> s
+            s.canRefresh -> renew(s)
+            else -> null
+        }
+    }
+
+    /** Shares one renewal among concurrent requests; a renewal never signs back in after logout. */
+    private suspend fun renew(prior: MusicSession): MusicSession = renewal.withLock {
+        session.let { if (it != prior) return it ?: throw MusicApiException("请先登录 QQ 音乐") }
+        val refreshed = try {
+            refreshSession(prior)
+        } catch (error: MusicApiException) {
+            if (!error.loginRejected) throw error
+            expire(prior)
+            throw MusicApiException("登录已过期，请重新扫码登录", error.serviceCode, error, loginRejected = true)
+        }
+        if (session != prior) return session ?: throw MusicApiException("请先登录 QQ 音乐")
+        withContext(Dispatchers.IO) { store.write(refreshed) }
+        session = refreshed
+        mutableProfile.value = refreshed.profile
+        refreshed
+    }
+
+    private fun expire(prior: MusicSession) {
+        if (session != prior) return
+        session = null
+        mutableProfile.value = null
+        store.clear()
+        expiredEvents.tryEmit("登录已过期，请重新扫码登录")
+    }
+
+    private suspend fun refreshSession(s: MusicSession): MusicSession {
+        val device = s.device ?: bootstrapDevice()
+        val parameters = json(
+            "openid" to s.openId, "refresh_token" to s.refreshToken, "str_musicid" to s.musicId, "musickey" to s.musicKey,
+            "unionid" to s.unionId, "refresh_key" to s.refreshKey, "loginMode" to 2,
+        )
+        if (s.loginType == 2) parameters.put("musicid", s.musicId)
+        val renewed = exchangeLogin(parameters, device, s)
+        return renewed.copy(
+            openId = renewed.openId.ifEmpty { s.openId }, refreshToken = renewed.refreshToken.ifEmpty { s.refreshToken },
+            unionId = renewed.unionId.ifEmpty { s.unionId }, refreshKey = renewed.refreshKey.ifEmpty { s.refreshKey },
+            name = renewed.name.ifEmpty { s.name }, avatar = renewed.avatar.ifEmpty { s.avatar },
+            encryptUin = renewed.encryptUin.ifEmpty { s.encryptUin },
+        )
+    }
+
+    /** music.login's Login, for WeChat codes and credential renewal; the device is kept with the session. */
+    private suspend fun exchangeLogin(parameters: JSONObject, device: LoginDevice, prior: MusicSession? = null): MusicSession {
+        val loginType = prior?.loginType ?: 1
+        val comm = device.comm().put("tmeLoginType", loginType)
+        prior?.let { comm.put("qq", it.musicId).put("authst", it.musicKey) }
+        val payload = json("comm" to comm, "req" to json("module" to "music.login.LoginServer", "method" to "Login", "param" to parameters))
+        val headers = mutableMapOf("User-Agent" to USER_AGENT, "Referer" to "https://y.qq.com/")
+        prior?.let { headers["Cookie"] = it.cookie }
+        val reply = send(MUSICU.toHttpUrl(), payload.toString().toRequestBody(JSON_MEDIA_TYPE), headers, auth = true)
+        return MusicSession.fromLoginResponse(MusicParsers.jsonResponse(reply.bytes), loginType).copy(device = device)
+    }
+
+    /** Registers a synthetic client device (QIMEI, then a music session ID), as WeChat login requires. */
+    private suspend fun bootstrapDevice(): LoginDevice {
+        var device = LoginDevice.create(random)
+        var now = System.currentTimeMillis()
+        for (attempt in 0..1) {
+            val request = QimeiEnvelope.build(device, now, random)
+            val reply = try {
+                send(QIMEI_URL.toHttpUrl(), request.body.toRequestBody(JSON_MEDIA_TYPE), request.headers, auth = true)
+            } catch (error: MusicApiException) {
+                throw MusicApiException("登录设备初始化失败，请检查网络后重试", error.serviceCode, error)
+            }
+            val (q16, q36) = QimeiEnvelope.parse(reply.bytes)
+            if (q16.isNotEmpty() && q36.isNotEmpty()) { device = device.copy(qimei = q16, qimei36 = q36); break }
+            // The signature is time-bound: retry once on the server's clock.
+            val server = reply.headers.getDate("Date")?.time
+            if (attempt == 1 || server == null || abs(server - now) <= 60_000) throw MusicApiException("登录设备初始化失败，请稍后重试")
+            now = server
+        }
+        val data = rpc("music.getSession.session", "GetSession", json("uid" to "", "vkey" to 0, "caller" to 0),
+            { device.comm() }, cookie = false)
+        val info = data.optJSONObject("session")
+        fun value(key: String) = info?.opt(key)?.takeIf { it != JSONObject.NULL }?.toString().orEmpty()
+        val uid = value("uid")
+        val sid = value("sid")
+        if (uid.isEmpty() || sid.isEmpty()) throw MusicApiException("登录设备初始化失败，请稍后重试")
+        return device.copy(uid = uid, sid = sid)
+    }
 
     private fun remember(songs: List<Song>) { songs.forEach { tracks[it.mid] = it } }
 
+    /**
+     * [comm] builds the request identity from the credential in use, so a request the service
+     * refuses can be retried once with a renewed credential. With [cookie] false no account is sent.
+     */
     private suspend fun rpc(
         module: String, method: String, parameters: JSONObject,
-        customComm: JSONObject? = null, userAgent: String = USER_AGENT,
+        comm: (MusicSession?) -> JSONObject = DEFAULT_COMM, userAgent: String = USER_AGENT,
+        cookie: Boolean = true, extraHeaders: Map<String, String> = emptyMap(),
     ): JSONObject {
-        val s = session?.takeIf { it.valid }
-        val comm = customComm ?: if (s == null) json("ct" to 24, "cv" to 0) else json(
-            "ct" to 11, "cv" to 14090008, "v" to 14090008, "chid" to "10003505", "tmeAppID" to "qqmusic",
-            "qq" to s.musicId, "authst" to s.musicKey, "tmeLoginType" to s.loginType,
-        )
+        val s = if (cookie) activeSession() else null
+        return try {
+            rpcOnce(module, method, parameters, comm(s), s, userAgent, extraHeaders)
+        } catch (error: MusicApiException) {
+            if (s == null || !error.loginRejected || !s.canRefresh) throw error
+            val renewed = renew(s)
+            rpcOnce(module, method, parameters, comm(renewed), renewed, userAgent, extraHeaders)
+        }
+    }
+
+    private suspend fun rpcOnce(
+        module: String, method: String, parameters: JSONObject, comm: JSONObject,
+        s: MusicSession?, userAgent: String, extraHeaders: Map<String, String>,
+    ): JSONObject {
         val payload = json("comm" to comm, "req_0" to json("module" to module, "method" to method, "param" to parameters))
         val headers = mutableMapOf("User-Agent" to userAgent, "Referer" to "https://y.qq.com/")
         if (s != null) headers["Cookie"] = s.cookie
+        headers.putAll(extraHeaders)
         val reply = send(MUSICU.toHttpUrl(), payload.toString().toRequestBody(JSON_MEDIA_TYPE), headers)
         val body = MusicParsers.jsonResponse(reply.bytes)
         val req = body.optJSONObject("req_0") ?: throw MusicApiException("QQ 音乐返回的数据不完整")
@@ -478,7 +857,7 @@ class QqMusicRepository(context: Context) {
 
     private suspend fun cgi(path: String, parameters: Map<String, String>, userAgent: String = USER_AGENT): JSONObject {
         val headers = mutableMapOf("User-Agent" to userAgent, "Referer" to "https://y.qq.com/")
-        session?.takeIf { it.valid }?.let { headers["Cookie"] = it.cookie }
+        activeSession()?.let { headers["Cookie"] = it.cookie }
         val reply = send(url("https://c.y.qq.com$path", parameters + mapOf("format" to "json", "outCharset" to "utf-8")), headers = headers)
         val data = MusicParsers.jsonResponse(reply.bytes)
         if (!data.has("code")) throw MusicApiException("QQ 音乐未返回服务状态")
@@ -488,11 +867,12 @@ class QqMusicRepository(context: Context) {
 
     private suspend fun send(
         url: HttpUrl, body: RequestBody? = null, headers: Map<String, String> = emptyMap(), auth: Boolean = false,
+        http: OkHttpClient? = null, expect: Int? = null,
     ): HttpReply = suspendCancellableCoroutine { continuation ->
         val builder = Request.Builder().url(url).header("User-Agent", if (auth) "Mozilla/5.0" else USER_AGENT)
         headers.forEach { (key, value) -> builder.header(key, value) }
         body?.let(builder::post)
-        val call = (if (auth) authClient else client).newCall(builder.build())
+        val call = (http ?: if (auth) authClient else client).newCall(builder.build())
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -501,11 +881,12 @@ class QqMusicRepository(context: Context) {
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     try {
-                        if (response.code !in 200..(if (auth) 399 else 299)) throw MusicApiException("QQ 音乐服务暂不可用（${response.code}）", response.code)
+                        if (expect != null && response.code != expect || response.code !in 200..(if (auth) 399 else 299)) throw MusicApiException("QQ 音乐服务暂不可用（${response.code}）", response.code)
                         val bytes = response.body?.bytes() ?: throw MusicApiException("QQ 音乐未返回内容")
                         if (continuation.isActive) continuation.resume(HttpReply(response.code, response.headers, bytes))
                     } catch (error: Exception) {
-                        if (continuation.isActive) continuation.resumeWithException(error)
+                        val failure = if (error is IOException && error !is MusicApiException) MusicApiException("网络连接失败，请稍后重试", cause = error) else error
+                        if (continuation.isActive) continuation.resumeWithException(failure)
                     }
                 }
             }
@@ -521,8 +902,13 @@ class QqMusicRepository(context: Context) {
 
     companion object {
         private const val MUSICU = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+        private const val QIMEI_URL = "https://api.tencentmusic.com/tme/trpc/proxy"
+        private val DEFAULT_COMM: (MusicSession?) -> JSONObject = { it?.comm() ?: json("ct" to 24, "cv" to 0) }
+        private val LYRIC_TIME = Regex("\\[\\d{1,3}:\\d{2}")
         private const val USER_AGENT = "QQMusic 14090008(android 10)"
         private const val LOGIN_JUMP = "https://graph.qq.com/oauth2.0/login_jump"
+        private const val WECHAT_APP_ID = "wx48db31d50e334801"
+        private const val WECHAT_CONNECT = "https://open.weixin.qq.com/connect/qrconnect"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val PNG_SIGNATURE = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
     }
@@ -538,6 +924,12 @@ internal object MusicParsers {
         val album = item.optJSONObject("album")
         val albumMid = album?.text("mid", "albummid").orEmpty().ifBlank { item.text("albummid", "album_mid") }
         val singer = item.optJSONArray("singer") ?: item.optJSONArray("singers")
+        val artists = singer.objects().mapNotNull {
+            val artistMid = it.text("mid", "singermid", "singer_mid", "singerMid", "singerMID")
+            val artistName = it.text("name", "singername", "singer_name", "singerName")
+            if (artistName.isBlank()) null
+            else Artist(artistMid, it.number("id", "singerid", "singer_id", "singerID"), artistName, artistMid.takeIf(String::isNotBlank)?.let(::artistCover).orEmpty())
+        }
         return Song(
             mid, id, item.text("title", "name", "songname", "songName"),
             singer.objects().map { it.text("name", "singername", "singer_name") }.filter(String::isNotBlank).joinToString(" / ")
@@ -545,6 +937,7 @@ internal object MusicParsers {
             album?.text("name", "title").orEmpty().ifBlank { item.text("albumname", "album_name") },
             cover(albumMid), item.number("interval") * 1000,
             item.optJSONObject("file")?.text("media_mid").orEmpty().ifBlank { item.text("strMediaMid", "media_mid") }, albumMid,
+            artists,
         )
     }
 
@@ -556,7 +949,53 @@ internal object MusicParsers {
         return Playlist(id.toString(), item.text("dirName", "title", "dissname", "name"),
             item.text("bigpicUrl", "picUrl", "picurl", "coverUrl", "logo", "albumPicUrl").https(),
             item.text("nick", "nickname"), item.number("songNum", "songnum", "song_cnt").toInt(),
-            item.number("play_cnt", "playCount"))
+            item.number("play_cnt", "playCount"),
+            dirId = item.optInt("dirId").takeIf { item.has("dirName") && it > 0 } ?: 0)
+    }
+
+    fun libraryAlbum(item: JSONObject): Album? {
+        val id = item.number("albumid", "albumID", "id")
+        val mid = item.text("albummid", "albumMID", "albumMid", "mid")
+        if (id <= 0) return null
+        val artist = (item.optJSONArray("singers") ?: item.optJSONArray("singer")).objects()
+            .joinToString(" / ") { it.text("name", "singername", "singer_name", "singerName") }
+            .ifBlank { item.text("singername", "singerName") }
+        return Album(mid, id, item.text("albumname", "albumName", "name", "title"), artist,
+            cover(mid).ifBlank { item.text("picurl", "picUrl", "albumPicUrl").https() })
+    }
+
+    /** A membership date: yyyy-MM-dd[ HH:mm:ss] or unix seconds in China time; anything else is unknown. */
+    fun membershipDate(value: Any?): String {
+        val zone = java.util.TimeZone.getTimeZone("GMT+8")
+        return when (value) {
+            is Number -> value.toLong().takeIf { it > 0 }?.let {
+                java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { timeZone = zone }.format(java.util.Date(it * 1000))
+            }?.takeIf { it.take(4).toInt() in 1971..9999 }.orEmpty()
+            is String -> {
+                val date = value.trim().take(10)
+                val format = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { isLenient = false; timeZone = zone }
+                runCatching { format.parse(date) }.getOrNull()?.let { format.format(it) }
+                    ?.takeIf { it == date && date.take(4).toInt() > 1970 }.orEmpty()
+            }
+            else -> ""
+        }
+    }
+
+    /** A shelf's songs: miscellany.songList order, without IDs that are only other kinds of cards. */
+    fun shelfSongIds(shelf: JSONObject): List<Long> {
+        val cards = shelf.optJSONArray("v_niche").objects().flatMap { it.optJSONArray("v_card").objects() }
+        val songCards = cards.filter { it.optInt("type") == 200 }.mapNotNull { it.text("id").toLongOrNull()?.takeIf { id -> id > 0 } }
+        val others = cards.filter { it.optInt("type") != 200 }.mapNotNull { it.text("id").toLongOrNull() }.toSet() - songCards.toSet()
+        val listed = cards.mapNotNull { it.optJSONObject("miscellany")?.text("songList") }.flatMap { it.split(',') }
+            .mapNotNull { it.trim().toLongOrNull()?.takeIf { id -> id > 0 } }.filter { it !in others }.distinct()
+        return listed.ifEmpty { songCards.distinct() }
+    }
+
+    fun shelfTitle(shelf: JSONObject): String {
+        val template = shelf.text("title_template")
+        val content = shelf.text("title_content")
+        return (if (template.isNotEmpty()) template.replace("{String}", content) else content)
+            .replace("⁢", "").trim().ifEmpty { "为你推荐的歌曲" }
     }
 
     fun search(data: JSONObject, type: Int): SearchResult {
@@ -572,7 +1011,8 @@ internal object MusicParsers {
         1 -> SearchResult(artists = raw.objects().mapNotNull {
             val mid = it.text("mid", "singermid", "singerMID", "singer_mid", "singerMid")
             val id = it.number("id", "singerid", "singerID", "singer_id", "singerId")
-            if (mid.isBlank() || id <= 0) null else Artist(mid, id, it.text("name", "singername", "singerName", "singer_name"), artistCover(mid))
+            if (mid.isBlank() || id <= 0) null else Artist(mid, id, it.text("name", "singername", "singerName", "singer_name"),
+                it.text("singerPic").https().ifBlank { artistCover(mid) }, it.optInt("songNum"), it.optInt("albumNum"))
         }, total = total)
         2 -> SearchResult(albums = raw.objects().mapNotNull {
             val mid = it.text("mid", "albummid", "albumMID", "album_mid", "albumMid")
@@ -585,13 +1025,69 @@ internal object MusicParsers {
         else -> SearchResult(songs = songs(raw), total = total)
     }
 
-    fun lyrics(original: String, translation: String): Lyrics {
-        val lines = lrc(original)
-        val translated = lrc(translation)
-        return Lyrics(lines.map { line ->
-            val match = translated.minByOrNull { abs(it.timeMs - line.timeMs) }
-            line.copy(translation = match?.takeIf { abs(it.timeMs - line.timeMs) < 1500 }?.text.orEmpty())
-        })
+    /**
+     * Prefers real QRC word times, falling back to LRC line times, and gives each
+     * translation to the line nearest its time: word-timed lines start a little
+     * off the LRC times their translations follow.
+     */
+    fun lyrics(original: String, translation: String, qrc: String = ""): Lyrics {
+        val lines = qrc(qrc).ifEmpty {
+            val timed = lrc(original)
+            timed.mapIndexed { i, line ->
+                val next = timed.getOrNull(i + 1)?.timeMs
+                line.copy(endMs = minOf(line.timeMs + 6000, next ?: Long.MAX_VALUE))
+            }
+        }.toMutableList()
+        for (t in lrc(translation)) {
+            val best = lines.indices.minByOrNull { abs(lines[it].timeMs - t.timeMs) } ?: continue
+            if (abs(lines[best].timeMs - t.timeMs) < 1500 && lines[best].translation.isEmpty()) {
+                lines[best] = lines[best].copy(translation = t.text)
+            }
+        }
+        return Lyrics(lines)
+    }
+
+    /**
+     * QQ's word-timed lyrics, either their XML wrapper or its LyricContent. Each text
+     * fragment precedes its (absolute start, duration) in milliseconds; literal
+     * parentheses and timed spaces remain part of the text.
+     */
+    fun qrc(raw: String): List<LyricLine> {
+        if (raw.isBlank()) return emptyList()
+        val content = Regex("\\bLyricContent=\"([^\"]*)\"").find(raw)?.groupValues?.get(1)?.let(::unescapeXml) ?: raw
+        val header = Regex("^\\[(\\d+),(\\d+)]")
+        val unit = Regex("\\((\\d+),(\\d+)\\)")
+        return content.lineSequence().mapNotNull { source ->
+            val line = source.trim()
+            val head = header.find(line) ?: return@mapNotNull null
+            val start = head.groupValues[1].toLong()
+            var end = start + head.groupValues[2].toLong()
+            val body = line.substring(head.range.last + 1)
+            val words = mutableListOf<LyricWord>()
+            var at = 0
+            for (match in unit.findAll(body)) {
+                val text = body.substring(at, match.range.first)
+                at = match.range.last + 1
+                if (text.isEmpty()) continue // An empty timed unit carries no text to highlight.
+                val wordStart = match.groupValues[1].toLong()
+                val word = LyricWord(text, wordStart, wordStart + match.groupValues[2].toLong())
+                words += word
+                end = maxOf(end, word.endMs)
+            }
+            val text = words.joinToString("") { it.text }.trim()
+            if (text.isEmpty() || body.substring(at).isNotBlank() || text.contains("此歌曲为没有填词的纯音乐")) null
+            else LyricLine(start, text, endMs = end, words = words)
+        }.sortedBy { it.timeMs }.toList()
+    }
+
+    private fun unescapeXml(text: String): String = Regex("&(#x[0-9a-fA-F]+|#\\d+|amp|lt|gt|quot|apos);").replace(text) {
+        when (val entity = it.groupValues[1]) {
+            "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; "apos" -> "'"
+            else -> {
+                val code = if (entity.startsWith("#x")) entity.drop(2).toIntOrNull(16) else entity.drop(1).toIntOrNull()
+                code?.takeIf(Character::isValidCodePoint)?.let { c -> String(Character.toChars(c)) } ?: it.value
+            }
+        }
     }
 
     private fun lrc(raw: String): List<LyricLine> {
@@ -656,8 +1152,16 @@ internal object MusicParsers {
         return values
     }
 
+    fun wechatUuid(page: String): String? =
+        Regex("(?:uuid=|/connect/qrcode/)([A-Za-z0-9_-]+)").find(page)?.groupValues?.get(1)
+
+    /** The long-poll reply is a script; it is matched as data, never evaluated. Returns (errcode, code). */
+    fun wechatStatus(reply: String): Pair<String, String>? =
+        Regex("""window\.wx_errcode\s*=\s*(\d+)\s*;\s*window\.wx_code\s*=\s*'([^'\r\n]*)'""")
+            .find(reply)?.groupValues?.let { it[1] to it[2] }
+
     fun cover(mid: String): String = if (mid.isBlank()) "" else "https://y.gtimg.cn/music/photo_new/T002R500x500M000$mid.jpg"
-    private fun artistCover(mid: String): String = "https://y.gtimg.cn/music/photo_new/T001R500x500M000$mid.jpg"
+    fun artistCover(mid: String): String = "https://y.gtimg.cn/music/photo_new/T001R500x500M000$mid.jpg"
 }
 
 internal fun JSONObject.text(vararg keys: String): String = keys.firstNotNullOfOrNull {
@@ -696,7 +1200,8 @@ private fun hash33(text: String, initial: Long): Long = text.fold(initial) { val
 private fun checkStatus(body: JSONObject, item: JSONObject) {
     if (!body.has("code") || !item.has("code")) throw MusicApiException("QQ 音乐未返回服务状态")
     val code = body.optInt("code", -1).takeIf { it != 0 } ?: item.optInt("code", -1).takeIf { it != 0 } ?: item.optInt("subcode")
-    if (code != 0) throw MusicApiException(if (code in listOf(1000, 104400, 104401)) "登录已过期，请重新登录" else "QQ 音乐暂时无法处理请求（$code）", code)
+    val rejected = body.optInt("code", -1) == 0 && code in listOf(1000, 104400, 104401)
+    if (code != 0) throw MusicApiException(if (rejected) "登录已过期，请重新登录" else "QQ 音乐暂时无法处理请求（$code）", code, loginRejected = rejected)
 }
 private fun checkInnerStatus(data: JSONObject) {
     for (key in listOf("code", "subcode", "retcode")) {

@@ -1,18 +1,28 @@
 # Lilt for Android
 
-使用 Kotlin、Jetpack Compose 和 Media3 开发的原生 QQ 音乐客户端，支持 Android 8.0 及以上版本。界面依据 Pencil 中的 Lilt 设计稿实现，采用 Radix Colors 和 Tabler Icons。
+使用 Kotlin、Jetpack Compose 和 Media3 开发的原生 QQ 音乐客户端，支持 Android 8.0 及以上版本。界面依据 Pencil 中的 Lilt 设计稿实现，颜色与字号取自设计稿变量，图标使用 Tabler Icons。
 
 ## 已实现
 
-- 首页推荐、每日推荐、歌单与排行榜、歌曲／歌手／专辑／歌单搜索。
-- QQ 扫码登录、昵称头像、我的歌单、云端喜欢状态读取与切换。
+- 首页每日推荐、QQ 个性化歌曲推荐（如「幸运好歌」「听某歌手的也在听」，标题由服务端提供）、推荐歌单，以及显示前三首的排行榜。
+- 歌曲／歌手／专辑／歌单搜索；歌手结果显示单曲与专辑数，可直接播放热门歌曲。
+- 专辑页、歌手页（热门歌曲、歌曲与专辑数），多位歌手的歌曲先选择歌手；专辑与歌手页可层层返回。
+- 「我的」页显示绿钻／超级会员与到期日，提供已购音乐、收藏的专辑、收藏的歌单和自建歌单。
+- QQ 与微信扫码登录、昵称头像、我的歌单、云端喜欢状态读取与切换。
+- 登录凭据到期后自动续期：请求前续期本地已过期的 musickey，服务端拒绝凭据时续期一次并重试；续期被拒绝时清除登录并提示重新扫码。
 - 在线标准、HQ、无损音源请求，按账号权限和音源可用性回退。
-- 后台播放、系统媒体控制、播放队列、进度调整、随机与循环播放。
-- 专辑封面播放页、按行同步的 LRC 歌词。
-- 最近播放、本地音频导入、系统下载管理、主题与图片缓存设置。
+- 后台播放、系统媒体控制、进度调整、随机与循环播放；队列显示来源，长按拖动排序，左滑移除。
+- 歌曲菜单：下一首播放、添加到自建歌单、下载、分享、查看歌手与专辑；播放页另有播放音质与睡眠定时。
+- 电台续播：队列快播完时追加私人电台歌曲。
+- 音量均衡：按 QQ 提供的响度（增益 +4 dB 预增益并受峰值限制）调节音量，只衰减不放大；淡入淡出：播放、暂停和切歌时短暂渐变。
+- 在线音频缓存，可设置上限（512 MB 至 8 GB）并清除；下载音质可单独设置。
+- 专辑封面播放页；QQ 云端 QRC 逐字歌词，每个字按自身时长点亮；没有 QRC 时回退到按行同步的 LRC，并匹配翻译。
+- 最近播放、本地音频导入、系统下载管理、深色模式设置。
 - 手机底部导航与宽屏导航栏，浅色和深色主题。
 
 直接使用 QQ 音乐接口，不需要另行部署服务端。接口经验来自桌面项目 `../mygo-cloudmusic`。登录凭据使用 Android Keystore 加密，保存在应用的 `noBackupFilesDir`，不写入源码或日志。
+
+微信登录和凭据续期需要一个已登记的客户端设备：应用生成随机的合成设备标识（不读取本机硬件标识），向 QQ 音乐登记 QIMEI 和会话号，并与凭据一起加密保存。
 
 ## 构建与安装
 
@@ -24,16 +34,19 @@ $env:JAVA_HOME = 'C:/Program Files/Android/Android Studio/jbr'
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-调试 APK：`app/build/outputs/apk/debug/app-debug.apk`。`assembleRelease` 生成经过压缩的未签名 release APK；正式发布前需要配置发布签名。
+调试 APK：`app/build/outputs/apk/debug/app-debug.apk`。
+
+覆盖安装要求与已安装应用使用同一个调试签名。若环境变量 `ANDROID_SDK_HOME` 指向其他目录，Gradle 会使用那里的 `.android/debug.keystore`，`adb install -r` 会因签名不一致失败；构建前将它指向包含 `.android` 的用户目录即可，不要为此卸载应用。`assembleRelease` 生成经过压缩的未签名 release APK；正式发布前需要配置发布签名。
 
 ## 验证
 
 2026-11-10 在 Android 16 模拟器完成：
 
-- 10 项解析单元测试、Android Lint、debug 和未签名 release 构建通过。
-- 5 项 instrumentation 测试通过，覆盖真实账号的每日推荐、歌单、收藏读取、歌词与三种音质的实际播放，以及导航、队列和后台播放。
-- 最后一次导航修正后，2 项导航用例再次通过。
-- 原生截图检查覆盖手机／平板横竖屏、浅色／深色，以及 1.3 倍系统字体。设计预览用于视觉比较，账号测试使用真实接口。
+- 28 项单元测试通过，包括桌面项目录制的 4 份 QRC 密文样本、逐字解析、微信状态与登录响应、QIMEI 签名与加密结构、过期凭据的保存与续期条件。
+- Android Lint、debug 和未签名 release 构建通过。
+- 7 项 instrumentation 测试通过：真实账号的资料、歌单、每日推荐、收藏读取与三种音质实际播放；《晴天》云端 QRC 解出 63 行、602 个逐字单元；微信登录完成设备登记并取得可扫描的二维码；以及导航、队列和后台播放。
+- 真实账号界面检查：推荐歌曲与排行榜前三首、会员与到期日、逐字歌词点亮、歌曲菜单、歌手与专辑页及返回；开启音量均衡后系统音轨音量为 −4.2 dB。
+- 微信扫码确认需要真人操作，尚未由测试覆盖；凭据续期的服务端路径与桌面端一致，尚未在真实过期凭据上验证。
 
 ```powershell
 ./gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebugAndroidTest
@@ -56,18 +69,18 @@ adb shell am instrument -w -r -e authenticated true -e live true com.lilt.app.te
 
 ## 当前边界
 
-- 支持 QQ 扫码；微信登录所需的设备初始化流程尚未移植。
-- 使用 LRC 按行同步，尚未实现 QRC 逐字解密与同步。
-- 登录过期后需要重新扫码，尚未实现桌面端的凭据自动续期。
-- 搜索目前返回第一页，尚未实现分页；专辑、歌手搜索结果进入关联歌曲搜索。
-- 尚未覆盖桌面端全部能力，例如已购专辑、收藏专辑、响度均衡、交叉淡入淡出和自动更新。
+设计稿中以下部分暂未实现，原因是桌面端没有可复用的接口或安卓端没有对应条件：
+
+- 歌词搜索、收藏歌单（桌面端只有取消收藏）、从这首歌开始电台、评论、锁屏歌词、检查更新。
+- 设计稿使用 Noto Sans SC 和背景模糊玻璃；安卓端使用系统字体，玻璃效果以半透明表面近似，播放页背景模糊需要 Android 12 及以上。
+- 搜索只返回第一页。
 - 音乐内容、地区限制、会员与播放权限由 QQ 音乐接口决定。
 
 ## 代码
 
 - `data/`：QQ 音乐协议、数据解析和加密会话。
 - `playback/`：Media3 服务、播放控制与队列。
-- `ui/`：Compose 页面、组件和 Radix 主题。
+- `ui/`：Compose 页面、组件、底部面板和设计稿主题。
 - `LiltViewModel.kt`：导航、页面状态和业务交互。
 
-项目许可证见 [LICENSE](LICENSE)；Tabler Icons 使用 MIT 许可证，原文保存在 `app/src/main/assets/licenses/tabler-icons.txt`。
+项目许可证见 [LICENSE](LICENSE)；Tabler Icons 使用 MIT 许可证，原文保存在 `app/src/main/assets/licenses/tabler-icons.txt`。QRC 解密使用的 DES 表来自 Go 标准库，BSD 许可证原文保存在 `app/src/main/assets/licenses/go-des.txt`。

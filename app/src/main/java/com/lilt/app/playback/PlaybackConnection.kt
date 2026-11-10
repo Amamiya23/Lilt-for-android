@@ -106,6 +106,23 @@ class PlaybackConnection(context: Context) {
         play()
     }
 
+    /** Inserts after the current song, or starts playing when the queue is empty. */
+    fun playNext(tracks: List<ResolvedTrack>) = command {
+        if (tracks.isEmpty()) return@command
+        knownTracks = (knownTracks + tracks).distinctBy { it.id }
+        if (mediaItemCount == 0) { setMediaItems(tracks.map(::mediaItem)); prepare(); play(); return@command }
+        addMediaItems(currentMediaItemIndex + 1, tracks.map(::mediaItem))
+    }
+
+    fun append(tracks: List<ResolvedTrack>) = command {
+        if (tracks.isEmpty()) return@command
+        knownTracks = (knownTracks + tracks).distinctBy { it.id }
+        addMediaItems(tracks.map(::mediaItem))
+        if (playbackState == Player.STATE_ENDED || playbackState == Player.STATE_IDLE) { prepare(); play() }
+    }
+
+    fun pause() = command { pause() }
+
     fun toggle() = command {
         when {
             playbackState == Player.STATE_IDLE && mediaItemCount > 0 -> {
@@ -237,6 +254,7 @@ class PlaybackConnection(context: Context) {
             shuffle = player.shuffleModeEnabled,
             repeatMode = player.repeatMode,
             error = failure ?: mutableState.value.error,
+            sampledAtMs = android.os.SystemClock.elapsedRealtime(),
         )
     }
 
