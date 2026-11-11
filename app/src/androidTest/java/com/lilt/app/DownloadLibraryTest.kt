@@ -12,6 +12,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.lilt.app.data.Artist
 import com.lilt.app.data.DownloadLibrary
 import com.lilt.app.data.Song
+import com.lilt.app.data.Lyrics
+import com.lilt.app.data.LyricLine
+import com.lilt.app.data.LyricWord
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -22,6 +25,71 @@ import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class DownloadLibraryTest {
+    @Suppress("DEPRECATION")
+    @Test fun downloadedArtworkAndWordLyricsSurviveRecreationAndDeleteWithAudio() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<LiltApplication>()
+        val manager = context.getSystemService(DownloadManager::class.java)
+        val file = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "offline-resources-test.wav")
+        val samples = 8000 * 20
+        file.writeBytes(java.nio.ByteBuffer.allocate(44 + samples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+            put("RIFF".toByteArray()); putInt(36 + samples * 2); put("WAVEfmt ".toByteArray())
+            putInt(16); putShort(1); putShort(1); putInt(8000); putInt(16000); putShort(2); putShort(16)
+            put("data".toByteArray()); putInt(samples * 2)
+        }.array())
+        val id = manager.addCompletedDownload("离线资源", "测试歌手", false, "audio/wav",
+            file.absolutePath, file.length(), true)
+        val artwork = android.util.Base64.decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/h1cAAAAASUVORK5CYII=",
+            android.util.Base64.DEFAULT)
+        val lyrics = Lyrics(listOf(LyricLine(1000, "晴天", "Sunny day", 2400,
+            listOf(LyricWord("晴", 1000, 1500), LyricWord("天", 1500, 2400)))))
+        val original = Song("online-resources-mid", 123, "离线资源", "测试歌手",
+            cover = "https://unreachable.invalid/cover.jpg")
+        var savedCover: File? = null
+        try {
+            DownloadLibrary(context).remember(id, original, lyrics, artwork)
+            val recreated = DownloadLibrary(context)
+            val local = recreated.completed().first { it.id == id }
+            assertTrue(local.cover.startsWith("file:"))
+            savedCover = File(Uri.parse(local.cover).path!!)
+            assertTrue(savedCover.absolutePath.startsWith(context.filesDir.absolutePath))
+            context.contentResolver.openInputStream(Uri.parse(local.cover))!!.use {
+                assertArrayEquals(artwork, it.readBytes())
+            }
+            assertEquals(lyrics, recreated.lyrics(local))
+            // A mismatched system ID must not delete some other imported document.
+            assertFalse(recreated.delete(local.copy(mid = "content://different/document")))
+            assertTrue(file.exists())
+            ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+                lateinit var vm: LiltViewModel
+                scenario.onActivity { activity ->
+                    vm = ViewModelProvider(activity)[LiltViewModel::class.java]
+                    vm.play(listOf(local))
+                    vm.showPlayer(true)
+                }
+                withTimeout(10_000) { vm.player.first { it.current?.id == local.mid && it.isPlaying } }
+                withTimeout(10_000) { vm.state.first { !it.lyricsLoading && it.lyrics == lyrics } }
+                withTimeout(10_000) { vm.state.first { it.local.any { song -> song.mid == local.mid } } }
+                scenario.onActivity { vm.deleteLocal(local) }
+                withTimeout(10_000) { vm.player.first { it.tracks.isEmpty() } }
+                withTimeout(10_000) {
+                    vm.state.first { it.local.none { song -> song.mid == local.mid } &&
+                        it.lyrics.lines.isEmpty() && !it.lyricsLoading && !it.playerOpen }
+                }
+            }
+            assertFalse(file.exists())
+            assertFalse(savedCover.exists())
+            assertNull(recreated.lyrics(local))
+            assertFalse(context.getSharedPreferences("lilt_downloads", Context.MODE_PRIVATE).contains(id.toString()))
+            assertTrue(DownloadLibrary(context).completed().none { it.id == id })
+        } finally {
+            manager.remove(id)
+            context.getSharedPreferences("lilt_downloads", Context.MODE_PRIVATE).edit().remove(id.toString()).apply()
+            savedCover?.parentFile?.deleteRecursively()
+            file.delete()
+        }
+    }
+
     /** Old downloads have only system metadata; new downloads also retain album/artwork across restarts. */
     @Suppress("DEPRECATION")
     @Test fun completedDownloadsRecoverIntoLocalLibraryWithReadableUris() = runBlocking<Unit> {

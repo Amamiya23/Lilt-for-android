@@ -27,10 +27,14 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -246,8 +250,28 @@ fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modif
             active: Boolean = false, index: Int? = null, height: Dp = 64.dp, cover: Dp = 48.dp, coverRadius: Dp = 8.dp,
             subtitle: String = song.artist, trailing: (@Composable () -> Unit)? = null) {
     val tertiary = MaterialTheme.lilt.textTertiary
+    val selection = LocalSongSelection.current?.takeIf { song.mid in it.availableIds }?.state
+    val selecting = selection?.active == true
+    val checked = selecting && song.mid in selection.selectedIds
+    val source = remember { MutableInteractionSource() }
+    val interaction = if (selection == null) Modifier.quietClickable(onClick = onClick)
+        else Modifier.quietIndication(source).pressFeedback(source, 1f, .76f).combinedClickable(
+            interactionSource = source, indication = null,
+            role = if (selecting) Role.Checkbox else Role.Button,
+            onLongClickLabel = "多选歌曲",
+            onLongClick = {
+                if (selection.active) selection.toggle(song.mid) else selection.start(song.mid)
+            },
+            onClick = { if (selection.active) selection.toggle(song.mid) else onClick() })
     Row(modifier.fillMaxWidth().heightIn(min = height).clip(RoundedCornerShape(12.dp))
-        .quietClickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+        .background(if (checked) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+        .testTag("song-row-${song.mid}").semantics {
+            if (selecting) {
+                selected = checked
+                toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
+            }
+        }
+        .then(interaction), verticalAlignment = Alignment.CenterVertically) {
         if (index != null) {
             Box(Modifier.width(22.dp), contentAlignment = Alignment.Center) {
                 if (active) AppIcon(Glyph.Volume, Modifier.size(18.dp), MaterialTheme.colorScheme.primary, "正在播放")
@@ -265,7 +289,8 @@ fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modif
             if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (trailing != null) trailing()
+        if (selecting) SongSelectionCheck(checked)
+        else if (trailing != null) trailing()
         else IconAction(Glyph.More, "${song.title}的更多操作", tint = tertiary, iconSize = 20.dp, onClick = onMore)
     }
 }

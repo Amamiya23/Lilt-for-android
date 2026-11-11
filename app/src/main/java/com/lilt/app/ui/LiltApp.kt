@@ -47,6 +47,9 @@ private sealed interface SongMenu {
     data class Artists(val song: Song) : SongMenu
     data class AddTo(val song: Song) : SongMenu
     data class Create(val song: Song) : SongMenu
+    data class AddSelection(val songs: List<Song>) : SongMenu
+    data class CreateSelection(val songs: List<Song>) : SongMenu
+    data class Delete(val song: Song) : SongMenu
     data object Quality : SongMenu
     data object Sleep : SongMenu
 }
@@ -59,13 +62,27 @@ fun LiltApp(vm: LiltViewModel) {
     val snackbar = remember { SnackbarHostState() }
     val tabStates = rememberSaveableStateHolder()
     var menu by remember { mutableStateOf<SongMenu?>(null) }
+    val selectableSongs = songsForSelection(state)
+    val availableIds = selectableSongs.map { it.mid }.toSet()
+    val selection = remember(selectionScope(state)) { SongSelectionState() }
+    var deleteSelection by remember(selection) { mutableStateOf<List<Song>?>(null) }
+    var removeSelection by remember(selection) { mutableStateOf<Pair<Playlist, List<Song>>?>(null) }
+    val editablePlaylist = state.detail?.playlist?.takeIf {
+        state.destination == Destination.Playlist && (it.dirId in 1 until 200 || it.dirId == 201)
+    }
+    val removableIds = if (editablePlaylist != null) availableIds else state.local.map { it.mid }.toSet()
+    LaunchedEffect(selection, availableIds) { selection.reconcile(availableIds) }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
     // The search keyboard must not stay over the player.
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
-    LaunchedEffect(state.playerOpen) { if (state.playerOpen) focus.clearFocus() }
+    LaunchedEffect(state.playerOpen, selection.active) {
+        if (state.playerOpen || selection.active) focus.clearFocus()
+    }
     BackHandler(state.playerOpen || state.destination != Destination.Home) { vm.back() }
+    BackHandler(selection.active && !state.playerOpen) { selection.clear() }
     val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val onMore: (Song) -> Unit = { menu = SongMenu.Actions(it) }
+    val selectionBottomPadding = 73.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val onMore: (Song) -> Unit = { vm.refreshSongLike(it); menu = SongMenu.Actions(it) }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val expanded = maxWidth >= 700.dp
@@ -90,31 +107,45 @@ fun LiltApp(vm: LiltViewModel) {
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxHeight()) {
-                    val bottomPadding = if (standalone) 24.dp else if (expanded) (if (showMini) 104.dp else 32.dp)
+                    val bottomPadding = if (selection.active) 16.dp else if (standalone) 24.dp else if (expanded) (if (showMini) 104.dp else 32.dp)
                         else if (showMini) 168.dp else 100.dp
-                    CompositionLocalProvider(LocalTopInset provides topInset) {
-                        Box(Modifier.widthIn(max = if (expanded) 880.dp else 700.dp).fillMaxSize().align(Alignment.TopCenter)) {
-                            val page: @Composable () -> Unit = { when (state.destination) {
-                                Destination.Home -> HomeScreen(state, profile, vm, bottomPadding, onMore)
-                                Destination.Search -> SearchScreen(state, vm, bottomPadding, onMore)
-                                Destination.Library -> LibraryScreen(state, profile, vm, bottomPadding)
-                                Destination.Settings -> SettingsScreen(state, profile, vm)
-                                Destination.Login -> LoginScreen(state, vm)
-                                Destination.Playlist -> PlaylistScreen(state, vm, bottomPadding, onMore)
-                                Destination.Playlists -> PlaylistCollectionScreen(state, vm, bottomPadding)
-                                Destination.Albums -> AlbumCollectionScreen(state, vm, bottomPadding)
-                                Destination.Purchased -> PurchasedScreen(state, vm, bottomPadding, onMore)
-                                Destination.Local -> LocalScreen(state, vm, bottomPadding, onMore)
-                            } }
-                            if (state.destination == Destination.Home || state.destination == Destination.Search || state.destination == Destination.Library) {
-                                tabStates.SaveableStateProvider(state.destination.name) { page() }
-                            } else page()
+                    Column(Modifier.widthIn(max = if (expanded) 880.dp else 700.dp).fillMaxSize().align(Alignment.TopCenter)) {
+                        if (selection.active) SongSelectionHeader(selection, availableIds, state.batchBusy,
+                            Modifier.padding(top = topInset))
+                        CompositionLocalProvider(
+                            LocalTopInset provides if (selection.active) 0.dp else topInset,
+                            LocalSongSelection provides SongSelectionContext(selection, availableIds)) {
+                            Box(Modifier.weight(1f)) {
+                                val page: @Composable () -> Unit = { when (state.destination) {
+                                    Destination.Home -> HomeScreen(state, profile, vm, bottomPadding, onMore)
+                                    Destination.Search -> SearchScreen(state, vm, bottomPadding, onMore)
+                                    Destination.Library -> LibraryScreen(state, profile, vm, bottomPadding)
+                                    Destination.Settings -> SettingsScreen(state, profile, vm)
+                                    Destination.Login -> LoginScreen(state, vm)
+                                    Destination.Playlist -> PlaylistScreen(state, vm, bottomPadding, onMore)
+                                    Destination.Playlists -> PlaylistCollectionScreen(state, vm, bottomPadding)
+                                    Destination.Albums -> AlbumCollectionScreen(state, vm, bottomPadding)
+                                    Destination.Purchased -> PurchasedScreen(state, vm, bottomPadding, onMore)
+                                    Destination.Local -> LocalScreen(state, vm, bottomPadding, onMore)
+                                } }
+                                if (state.destination == Destination.Home || state.destination == Destination.Search || state.destination == Destination.Library) {
+                                    tabStates.SaveableStateProvider(state.destination.name) { page() }
+                                } else page()
+                            }
                         }
+                        if (selection.active) SongSelectionActions(selection, selectableSongs, removableIds,
+                            state.batchBusy, onAddTo = { songs ->
+                                if (profile == null && !state.preview) vm.navigate(Destination.Login)
+                                else menu = SongMenu.AddSelection(songs)
+                            }, onDownload = vm::downloadSongs, onRemove = { songs ->
+                                if (editablePlaylist != null) removeSelection = editablePlaylist to songs
+                                else deleteSelection = songs
+                            })
                     }
                     // Pages scroll under the status bar; the design covers it with glass.
                     if (state.destination != Destination.Login && state.destination != Destination.Playlist) Box(Modifier.fillMaxWidth().height(topInset)
                         .background(MaterialTheme.lilt.glass.copy(alpha = .985f)))
-                    if (!standalone) Column(Modifier.align(Alignment.BottomCenter)
+                    if (!selection.active && !standalone) Column(Modifier.align(Alignment.BottomCenter)
                         .then(if (expanded) Modifier.widthIn(max = 760.dp).padding(horizontal = 24.dp) else Modifier).fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (showMini) MiniPlayer(player, vm.currentSong(), state.preview,
@@ -126,8 +157,33 @@ fun LiltApp(vm: LiltViewModel) {
             }
             PlayerOverlay(state, player, vm, onMore)
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
-                .padding(bottom = if (state.playerOpen || standalone) 16.dp else 88.dp, start = 16.dp, end = 16.dp))
+                .padding(bottom = if (state.playerOpen || standalone) 16.dp else if (selection.active) selectionBottomPadding + 8.dp else 88.dp,
+                    start = 16.dp, end = 16.dp))
         }
+    }
+    deleteSelection?.let { songs ->
+        AlertDialog(onDismissRequest = { deleteSelection = null },
+            icon = { AppIcon(Glyph.Trash) }, title = { Text("删除 ${songs.size} 首歌曲？") },
+            text = { Text("将从设备中删除所选歌曲及已保存的歌词和封面。") },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
+            dismissButton = { QuietTextButton({ deleteSelection = null }) { Text("取消") } },
+            confirmButton = {
+                QuietTextButton({ deleteSelection = null; vm.deleteLocalSongs(songs) }, enabled = !state.batchBusy) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            })
+    }
+    removeSelection?.let { (playlist, songs) ->
+        AlertDialog(onDismissRequest = { removeSelection = null },
+            icon = { AppIcon(Glyph.Trash) }, title = { Text("移除 ${songs.size} 首歌曲？") },
+            text = { Text(if (playlist.dirId == 201) "将取消喜欢所选歌曲。" else "将从「${playlist.title}」移除所选歌曲。") },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
+            dismissButton = { QuietTextButton({ removeSelection = null }) { Text("取消") } },
+            confirmButton = {
+                QuietTextButton({ removeSelection = null; vm.removeSongsFromPlaylist(songs, playlist) }, enabled = !state.batchBusy) {
+                    Text("移除", color = MaterialTheme.colorScheme.error)
+                }
+            })
     }
     val dark = state.playerOpen
     when (val current = menu) {
@@ -158,7 +214,8 @@ fun LiltApp(vm: LiltViewModel) {
                 },
                 onLike = { vm.toggleLike(song); menu = null },
                 onQuality = { menu = SongMenu.Quality },
-                onSleep = { menu = SongMenu.Sleep })
+                onSleep = { menu = SongMenu.Sleep },
+                onDelete = if (state.local.any { it.mid == song.mid }) ({ menu = SongMenu.Delete(song) }) else null)
         }
         is SongMenu.Artists -> ArtistPickerSheet(current.song, dark, { menu = null }, { menu = SongMenu.Actions(current.song) }) {
             menu = null; vm.showPlayer(false); vm.openArtist(it)
@@ -170,6 +227,26 @@ fun LiltApp(vm: LiltViewModel) {
         is SongMenu.Create -> PlaylistNameDialog("新建歌单", "创建", onDismiss = { menu = null }) {
             vm.createPlaylist(it, current.song); menu = null
         }
+        is SongMenu.AddSelection -> PlaylistPickerSheet(state.library.filter { it.dirId in 1 until 200 || it.dirId == 201 },
+            dark, { menu = null }, onCreate = { menu = SongMenu.CreateSelection(current.songs) }) {
+            vm.addSongsToPlaylist(current.songs, it); menu = null
+        }
+        is SongMenu.CreateSelection -> PlaylistNameDialog("新建歌单", "创建", onDismiss = { menu = null }) {
+            vm.createPlaylistWithSongs(it, current.songs); menu = null
+        }
+        is SongMenu.Delete -> AlertDialog(
+            onDismissRequest = { menu = null },
+            icon = { AppIcon(Glyph.Trash) },
+            title = { Text("删除歌曲？") },
+            text = { Text("将从设备中删除「${current.song.title}」及已保存的歌词和封面。") },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 0.dp,
+            dismissButton = { QuietTextButton({ menu = null }) { Text("取消") } },
+            confirmButton = {
+                QuietTextButton({ menu = null; vm.deleteLocal(current.song) }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            })
         SongMenu.Quality -> ChoiceSheet("在线播放音质", QualityOptions, state.quality, { menu = null }, dark) {
             vm.setQuality(it); menu = null; vm.notify("将在下一首歌曲生效")
         }

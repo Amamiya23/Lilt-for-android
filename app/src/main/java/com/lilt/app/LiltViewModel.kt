@@ -60,6 +60,8 @@ data class AppState(
     val quality: String = "standard",
     val recent: List<Song> = emptyList(),
     val local: List<Song> = emptyList(),
+    /** Preparing downloads or editing selected songs. */
+    val batchBusy: Boolean = false,
     val preview: Boolean = false,
     val membership: Membership? = null,
     val collectionAlbums: List<Album> = emptyList(),
@@ -130,7 +132,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { if (profile.value != null) runCatching { repository.refreshProfile() } }
         viewModelScope.launch { runCatching { playback.connect() }.onFailure { notify("播放器连接失败，请重试") } }
         viewModelScope.launch {
-            player.map { it.current?.id }.distinctUntilChanged().collect { mid ->
+            player.map { it.current?.id }.distinctUntilChanged().dropWhile { it == null }.collect { mid ->
                 if (mid != null) {
                     songBook[mid]?.let { song ->
                         val recent = (listOf(song) + state.value.recent).distinctBy { it.mid }.take(100)
@@ -138,6 +140,9 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                         saveSongs("recent", recent)
                         loadLyrics(song)
                     }
+                } else {
+                    lyricJob?.cancel()
+                    mutable.update { it.copy(lyrics = Lyrics(), lyricsLoading = false, lyricsError = null, playerOpen = false) }
                 }
             }
         }
@@ -303,9 +308,14 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun openPlaylist(playlist: Playlist) {
         if (playlist.id == "daily") { daily(); return }
-        detailJob?.cancel()
         go(Destination.Playlist)
-        mutable.update { it.copy(destination = Destination.Playlist, detail = PlaylistDetail(playlist, emptyList()), detailLoading = true, detailError = null) }
+        loadPlaylist(playlist)
+    }
+    private fun loadPlaylist(playlist: Playlist, keepCurrent: Boolean = false) {
+        detailJob?.cancel()
+        mutable.update { it.copy(destination = Destination.Playlist,
+            detail = if (keepCurrent) it.detail else PlaylistDetail(playlist, emptyList()),
+            detailLoading = true, detailError = null) }
         detailJob = viewModelScope.launch {
             try {
                 val id = playlist.id
@@ -316,7 +326,15 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                     else -> repository.playlist(id)
                 }
                 songBook.putAll(detail.songs.associateBy { it.mid })
-                mutable.update { it.copy(detail = detail, detailLoading = false) }
+                mutable.update { current ->
+                    // Public playlist responses omit the account-local directory. Keep the identity
+                    // obtained from the account's library, including 201 for 我喜欢.
+                    val dir = playlist.dirId.takeIf { it > 0 }
+                        ?: current.library.firstOrNull { it.id == playlist.id }?.dirId ?: 0
+                    val resolved = detail.copy(playlist = detail.playlist.copy(dirId = dir))
+                    current.copy(detail = resolved, detailLoading = false,
+                        liked = if (dir == 201) current.liked + resolved.songs.map { it.mid } else current.liked)
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 mutable.update { it.copy(detailLoading = false, detailError = readable(error)) }
@@ -405,13 +423,36 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val liked = !repository.isLiked(song.mid)
                 repository.like(song, liked)
-                mutable.update { it.copy(liked = if (liked) it.liked + song.mid else it.liked - song.mid) }
+                applyLikeState(song.mid, liked)
                 refreshLibrary()
                 notify(if (liked) "已添加到我喜欢" else "已取消喜欢")
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 notify(readable(error))
             } finally { mutable.update { it.copy(likeBusy = false) } }
+        }
+    }
+    /** Menus can be opened before a song has ever been played. */
+    fun refreshSongLike(song: Song) {
+        if (state.value.preview || profile.value == null || song.mid.startsWith("content:") || song.mid.startsWith("file:")) return
+        viewModelScope.launch {
+            try {
+                val liked = repository.isLiked(song.mid)
+                mutable.update { it.copy(liked = if (liked) it.liked + song.mid else it.liked - song.mid) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+            }
+        }
+    }
+    private fun applyLikeState(mid: String, liked: Boolean) {
+        mutable.update { current ->
+            val detail = current.detail
+            val updated = if (!liked && detail?.playlist?.dirId == 201) {
+                val songs = detail.songs.filterNot { it.mid == mid }
+                detail.copy(playlist = detail.playlist.copy(trackCount =
+                    (detail.playlist.trackCount - (detail.songs.size - songs.size)).coerceAtLeast(0)), songs = songs)
+            } else detail
+            current.copy(liked = if (liked) current.liked + mid else current.liked - mid, detail = updated)
         }
     }
     fun refreshLibrary() {
@@ -529,6 +570,83 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    fun addSongsToPlaylist(songs: List<Song>, playlist: Playlist) = editPlaylistSongs(songs, playlist, remove = false)
+    fun removeSongsFromPlaylist(songs: List<Song>, playlist: Playlist) = editPlaylistSongs(songs, playlist, remove = true)
+    private fun editPlaylistSongs(songs: List<Song>, playlist: Playlist, remove: Boolean) {
+        if (state.value.batchBusy) return
+        if (profile.value == null) { navigate(Destination.Login); return }
+        if (playlist.dirId !in 1 until 200 && playlist.dirId != 201) { notify("只能修改自己的歌单"); return }
+        val selected = songs.distinctBy { it.mid }.filterNot { it.mid.startsWith("content:") || it.mid.startsWith("file:") }
+        if (selected.isEmpty()) return
+        mutable.update { it.copy(batchBusy = true) }
+        viewModelScope.launch {
+            var completed = 0
+            var failed = 0
+            try {
+                for (batch in selected.chunked(100)) {
+                    try {
+                        if (remove) repository.removeSongsFromPlaylist(batch, playlist)
+                        else repository.addSongsToPlaylist(batch, playlist)
+                        completed += batch.size
+                        val mids = batch.map { it.mid }.toSet()
+                        mutable.update { current ->
+                            val detail = current.detail
+                            val updated = if (remove && detail?.playlist?.id == playlist.id) {
+                                val remaining = detail.songs.filterNot { it.mid in mids }
+                                detail.copy(playlist = detail.playlist.copy(trackCount =
+                                    (detail.playlist.trackCount - (detail.songs.size - remaining.size)).coerceAtLeast(0)), songs = remaining)
+                            } else detail
+                            current.copy(detail = updated, liked = if (playlist.dirId != 201) current.liked
+                                else if (remove) current.liked - mids else current.liked + mids)
+                        }
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        failed += batch.size
+                        // The write can succeed before its acknowledgement is lost. Re-read
+                        // affected favorite states, rather than leaving old hearts behind.
+                        if (playlist.dirId == 201) {
+                            try {
+                                val statuses = repository.likedStatus(batch.map { it.mid })
+                                statuses.forEach { (mid, liked) -> applyLikeState(mid, liked) }
+                                val confirmed = statuses.values.count { it == !remove }
+                                completed += confirmed
+                                failed -= confirmed
+                            } catch (readError: Exception) {
+                                if (readError is CancellationException) throw readError
+                            }
+                        }
+                    }
+                }
+                refreshLibrary()
+                // A rejected confirmation may follow a write the server already applied.
+                if (failed > 0 && state.value.destination == Destination.Playlist && state.value.detail?.playlist?.id == playlist.id)
+                    loadPlaylist(playlist, keepCurrent = true)
+                notify(buildString {
+                    append(if (remove) "已从「${playlist.title}」移除 $completed 首" else "已添加 $completed 首到「${playlist.title}」")
+                    if (failed > 0) append("，$failed 首未确认，请刷新查看")
+                })
+            } finally {
+                mutable.update { it.copy(batchBusy = false) }
+            }
+        }
+    }
+    fun createPlaylistWithSongs(name: String, songs: List<Song>) {
+        if (state.value.batchBusy) return
+        if (profile.value == null) { navigate(Destination.Login); return }
+        mutable.update { it.copy(batchBusy = true) }
+        viewModelScope.launch {
+            try {
+                val playlist = repository.createPlaylist(name)
+                mutable.update { it.copy(batchBusy = false) }
+                addSongsToPlaylist(songs, playlist)
+            } catch (error: Exception) {
+                mutable.update { it.copy(batchBusy = false) }
+                if (error is CancellationException) throw error
+                notify(readable(error))
+                refreshLibrary()
+            }
+        }
+    }
     /** Creates a playlist, then files [song] into it when the name was asked for from a song's menu. */
     fun createPlaylist(name: String, song: Song? = null) {
         viewModelScope.launch {
@@ -638,14 +756,14 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     fun loadLyrics(song: Song? = currentSong()) {
         song ?: return
         lyricJob?.cancel()
-        if (song.mid.startsWith("content:")) {
-            mutable.update { it.copy(lyrics = Lyrics(), lyricsLoading = false, lyricsError = null) }
-            return
-        }
         lyricJob = viewModelScope.launch {
             mutable.update { it.copy(lyrics = Lyrics(), lyricsLoading = true, lyricsError = null) }
             try {
-                val result = (if (state.value.preview) PreviewContent.lyrics else repository.lyrics(song))
+                val result = (when {
+                    state.value.preview -> PreviewContent.lyrics
+                    song.mid.startsWith("content:") -> withContext(Dispatchers.IO) { downloads.lyrics(song) } ?: Lyrics()
+                    else -> repository.lyrics(song)
+                })
                     .let { if (state.value.wordLyrics) it else Lyrics(it.lines.map { line -> line.copy(words = emptyList()) }) }
                 mutable.update { it.copy(lyrics = result, lyricsLoading = false) }
             } catch (error: Exception) {
@@ -696,7 +814,10 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     fun addLocal(uris: List<Uri>) {
         val context = getApplication<Application>()
         val songs = uris.map { uri ->
-            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            // Retain write access when the document provider grants it, so imported files can be deleted.
+            runCatching { context.contentResolver.takePersistableUriPermission(uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+                .onFailure { runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
             var title = uri.lastPathSegment.orEmpty()
             context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                 if (it.moveToFirst()) title = it.getString(0)
@@ -709,6 +830,97 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         val local = (downloadedSongs + imported).distinctBy { it.mid }
         songBook.putAll(local.associateBy { it.mid })
         mutable.update { it.copy(local = local) }
+    }
+    fun deleteLocal(song: Song) {
+        if (state.value.local.none { it.mid == song.mid }) return
+        viewModelScope.launch {
+            try {
+                localRefreshJob?.cancelAndJoin()
+                val deleted = deleteLocalFile(song)
+                if (!deleted) { notify("删除失败，请使用文件管理器检查文件"); return@launch }
+                removeLocalEntries(setOf(song.mid))
+                notify("已删除")
+            } catch (error: SecurityException) {
+                notify("没有文件删除权限，请重新导入以授权，或使用文件管理器删除")
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify("删除失败，请使用文件管理器检查文件")
+            }
+        }
+    }
+    fun deleteLocalSongs(songs: List<Song>) {
+        if (state.value.batchBusy) return
+        val local = state.value.local.associateBy { it.mid }
+        val selected = songs.distinctBy { it.mid }.mapNotNull { local[it.mid] }
+        if (selected.isEmpty()) return
+        mutable.update { it.copy(batchBusy = true) }
+        viewModelScope.launch {
+            val deleted = mutableSetOf<String>()
+            var failed = 0
+            var denied = 0
+            try {
+                localRefreshJob?.cancelAndJoin()
+                for (song in selected) {
+                    try {
+                        if (deleteLocalFile(song)) deleted += song.mid else failed++
+                    } catch (error: SecurityException) {
+                        failed++
+                        denied++
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        failed++
+                    }
+                }
+                notify(buildString {
+                    append("已删除 ${deleted.size} 首")
+                    if (failed > 0) append("，$failed 首失败")
+                    if (denied > 0) append("（$denied 首没有删除权限）")
+                })
+            } finally {
+                // Persist every successful deletion even when another selected file cannot be removed.
+                if (deleted.isNotEmpty()) removeLocalEntries(deleted)
+                mutable.update { it.copy(batchBusy = false) }
+            }
+        }
+    }
+    private suspend fun deleteLocalFile(song: Song): Boolean {
+        val downloaded = downloadedSongs.any { it.mid == song.mid }
+        return withContext(Dispatchers.IO) {
+            if (downloaded) downloads.delete(song)
+            else {
+                val context = getApplication<Application>()
+                val uri = Uri.parse(song.mid)
+                val removed = if (android.provider.DocumentsContract.isDocumentUri(context, uri))
+                    android.provider.DocumentsContract.deleteDocument(context.contentResolver, uri)
+                else context.contentResolver.delete(uri, null, null) > 0
+                if (removed) context.contentResolver.persistedUriPermissions.firstOrNull { it.uri == uri }?.let { grant ->
+                    val flags = (if (grant.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
+                        (if (grant.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+                    runCatching { context.contentResolver.releasePersistableUriPermission(uri, flags) }
+                }
+                removed
+            }
+        }
+    }
+    private fun removeLocalEntries(mids: Set<String>) {
+        val imported = readSongs("local").filterNot { it.mid in mids }
+        val recent = state.value.recent.filterNot { it.mid in mids }
+        saveSongs("local", imported)
+        saveSongs("recent", recent)
+        downloadedSongs = downloadedSongs.filterNot { it.mid in mids }
+        mids.forEach { songBook.remove(it) }
+        player.value.tracks.indices.reversed().filter { player.value.tracks[it].id in mids }
+            .forEach(playback::remove)
+        mutable.update { current ->
+            current.copy(local = current.local.filterNot { it.mid in mids }, recent = recent,
+                detail = current.detail?.let { detail ->
+                    if (detail.songs.none { it.mid in mids }) detail
+                    else {
+                        val songs = detail.songs.filterNot { it.mid in mids }
+                        detail.copy(playlist = detail.playlist.copy(trackCount = songs.size), songs = songs)
+                    }
+                })
+        }
     }
     fun refreshLocal() {
         localRefreshJob?.cancel()
@@ -728,23 +940,80 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         if (state.value.preview) { notify("设计预览不下载示例音频"); return }
         viewModelScope.launch {
             try {
-                val url = repository.songUrl(song, state.value.downloadQuality)
-                val filename = "${song.artist} - ${song.title}".replace(Regex("[\\\\/:*?\"<>|]"), "_") +
-                    if (url.substringBefore("?").endsWith(".flac")) ".flac" else ".mp3"
-                val request = DownloadManager.Request(Uri.parse(url))
-                    .setTitle(song.title).setDescription(song.artist)
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "Lilt/$filename")
-                    .addRequestHeader("Referer", "https://y.qq.com/")
-                val id = getApplication<Application>().getSystemService(DownloadManager::class.java).enqueue(request)
-                downloads.remember(id, song)
+                val resourcesSaved = enqueueDownload(song)
                 refreshLocal()
-                notify("已开始下载，完成后可在本地与下载中播放")
+                notify(if (resourcesSaved) "已开始下载，歌词与封面已保存" else "已开始下载，部分歌词或封面获取失败")
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 notify(readable(error))
             }
         }
+    }
+    fun downloadSongs(songs: List<Song>) {
+        if (state.value.batchBusy) return
+        if (state.value.preview) { notify("设计预览不下载示例音频"); return }
+        val selected = songs.distinctBy { it.mid }.filterNot {
+            it.mid.startsWith("content:") || it.mid.startsWith("file:")
+        }
+        if (selected.isEmpty()) return
+        val quality = state.value.downloadQuality
+        mutable.update { it.copy(batchBusy = true) }
+        viewModelScope.launch {
+            var started = 0
+            var failed = 0
+            var missingResources = 0
+            try {
+                for (song in selected) {
+                    try {
+                        if (!enqueueDownload(song, quality)) missingResources++
+                        started++
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        failed++
+                    }
+                }
+                refreshLocal()
+                notify(buildString {
+                    append("已开始下载 $started 首")
+                    if (failed > 0) append("，$failed 首失败")
+                    if (missingResources > 0) append("；$missingResources 首的歌词或封面获取失败")
+                })
+            } finally {
+                mutable.update { it.copy(batchBusy = false) }
+            }
+        }
+    }
+    /** True when both companion resources were fetched; the audio still downloads when one is unavailable. */
+    private suspend fun enqueueDownload(song: Song, quality: String = state.value.downloadQuality): Boolean {
+        val url = repository.songUrl(song, quality)
+        // Fetch companion resources before handing the audio to the system, so closing the
+        // app during the audio transfer still leaves the resources available on restart.
+        val (lyrics, cover) = coroutineScope {
+            val lyrics = async { downloadResource { repository.lyrics(song) } }
+            val cover = async { downloadResource { repository.coverBytes(song) } }
+            lyrics.await() to cover.await()
+        }
+        val filename = "${song.artist} - ${song.title}".replace(Regex("[\\\\/:*?\"<>|]"), "_") +
+            if (url.substringBefore("?").endsWith(".flac")) ".flac" else ".mp3"
+        val request = DownloadManager.Request(Uri.parse(url))
+            .setTitle(song.title).setDescription(song.artist)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "Lilt/$filename")
+            .addRequestHeader("Referer", "https://y.qq.com/")
+        val id = getApplication<Application>().getSystemService(DownloadManager::class.java).enqueue(request)
+        try {
+            withContext(Dispatchers.IO) { downloads.remember(id, song, lyrics, cover) }
+        } catch (error: Exception) {
+            getApplication<Application>().getSystemService(DownloadManager::class.java).remove(id)
+            throw error
+        }
+        return lyrics != null && (song.cover.isBlank() || cover != null)
+    }
+    private suspend fun <T> downloadResource(block: suspend () -> T): T? = try {
+        block()
+    } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        null
     }
     fun enablePreview() {
         if (!BuildConfig.DEBUG) return

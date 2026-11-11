@@ -84,7 +84,7 @@ private data class SheetTile(val glyph: Glyph, val label: String, val onClick: (
 fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: String, sleepLabel: String,
               onDismiss: () -> Unit, onPlayNext: () -> Unit, onAddToPlaylist: () -> Unit, onDownload: () -> Unit,
               onArtist: () -> Unit, onAlbum: (() -> Unit)?, onLike: () -> Unit,
-              onQuality: () -> Unit, onSleep: () -> Unit) {
+              onQuality: () -> Unit, onSleep: () -> Unit, onDelete: (() -> Unit)? = null) {
     LiltSheet(onDismiss, dark = fromPlayer) { colors ->
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
             modifier = Modifier.padding(horizontal = 4.dp)) {
@@ -103,6 +103,7 @@ fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: Str
                 SheetTile(Glyph.PlayNext, "下一首播放", onPlayNext),
                 if (online) SheetTile(Glyph.PlaylistAdd, "添加到歌单", onAddToPlaylist) else null,
                 if (online) SheetTile(Glyph.Download, "下载", onDownload) else null,
+                onDelete?.let { SheetTile(Glyph.Trash, "删除", it) },
             ).forEach { (glyph, label, action, tint) ->
                 Column(Modifier.weight(1f).height(76.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile).quietClickable(onClick = action),
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {

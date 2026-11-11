@@ -243,6 +243,11 @@ class QqMusicRepository(context: Context) {
         throw MusicApiException("QQ 音乐未提供播放链接，可能需要登录或相应会员权限")
     }
 
+    /** Downloads the original image bytes for durable offline artwork, outside Coil's cache. */
+    suspend fun coverBytes(song: Song): ByteArray? = song.cover.takeIf(String::isNotBlank)?.let {
+        send(it.toHttpUrl(), headers = mapOf("Referer" to "https://y.qq.com/")).bytes
+    }
+
     /** Prefers QQ's real word timings, with the old LRC service as a fallback. */
     suspend fun lyrics(song: Song): Lyrics {
         optional { playLyrics(song.mid) }.getOrNull()?.let { return it }
@@ -328,10 +333,16 @@ class QqMusicRepository(context: Context) {
     }
 
     suspend fun isLiked(mid: String): Boolean {
+        return likedStatus(listOf(mid)).getValue(mid)
+    }
+
+    /** QQ returns an entry for every requested MID; a missing value is not equivalent to false. */
+    suspend fun likedStatus(mids: List<String>): Map<String, Boolean> {
         signedSession()
-        val data = rpc("music.musicasset.SongFavRead", "IsSongFanByMid", json("v_songMid" to listOf(mid)))
-        return data.optJSONObject("m_fan")?.opt(mid) as? Boolean
-            ?: throw MusicApiException("QQ 音乐未返回喜欢状态")
+        val selected = mids.distinct()
+        if (selected.size !in 1..100 || selected.any { it.isBlank() }) throw MusicApiException("一次请选择 1–100 首歌曲")
+        val data = rpc("music.musicasset.SongFavRead", "IsSongFanByMid", json("v_songMid" to selected))
+        return PlaylistSongWrites.likedStatus(data, selected)
     }
 
     suspend fun createQr(provider: String): LoginQr {
@@ -619,25 +630,40 @@ class QqMusicRepository(context: Context) {
         return orders
     }
 
-    /** Only ordinary playlists this account created can be edited; system directories (201 liked, 202 daily) cannot. */
-    private suspend fun ownedDir(playlist: Playlist, refusal: String): Int {
+    /** Renaming/deleting a list still excludes system lists; song edits may explicitly opt into 201 liked. */
+    private suspend fun ownedDir(playlist: Playlist, refusal: String, allowLiked: Boolean = false): Int {
         val s = signedSession()
-        val entry = rpc("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", json("uin" to s.musicId))
-            .optJSONArray("v_playlist").objects().singleOrNull { it.number("tid").toString() == playlist.id }
-        val dir = entry?.optInt("dirId") ?: 0
-        if (entry == null || dir !in 1 until 200 || entry.optInt("dirType") != 0 ||
-            entry.text("uin").let { it.isNotEmpty() && it != s.musicId }) throw MusicApiException(refusal)
-        return dir
+        val data = rpc("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", json("uin" to s.musicId))
+        return PlaylistSongWrites.ownedDirectory(data, playlist.id, s.musicId, allowLiked, refusal)
     }
 
-    suspend fun addToPlaylist(song: Song, playlist: Playlist) {
-        val dir = ownedDir(playlist, "只能添加到自己创建的普通歌单")
-        val result = rpc("music.musicasset.PlaylistDetailWrite", "AddSonglist",
-            json("dirId" to dir, "v_songInfo" to listOf(json("songId" to song.id, "songType" to 0))))
-        val confirmed = result.optJSONObject("result")
-        if (result.optInt("retCode", -1) != 0 || confirmed == null ||
-            confirmed.number("tid").toString() != playlist.id || confirmed.optInt("dirId") != dir) {
-            throw MusicApiException("QQ 音乐未确认添加，请稍后在歌单中查看")
+    suspend fun addToPlaylist(song: Song, playlist: Playlist) = addSongsToPlaylist(listOf(song), playlist)
+
+    /** One request accepts at most 100 unique songs; callers can account for each confirmed chunk. */
+    suspend fun addSongsToPlaylist(songs: List<Song>, playlist: Playlist) = editPlaylistSongs(songs, playlist, add = true)
+
+    suspend fun removeSongsFromPlaylist(songs: List<Song>, playlist: Playlist) = editPlaylistSongs(songs, playlist, add = false)
+
+    private suspend fun editPlaylistSongs(songs: List<Song>, playlist: Playlist, add: Boolean) {
+        val selected = PlaylistSongWrites.songs(songs)
+        val dir = ownedDir(playlist, "只能编辑我喜欢或自己创建的歌单", allowLiked = true)
+        val likedBefore = if (dir == 201) likedStatus(selected.map { it.mid }) else emptyMap()
+        val changes = if (dir == 201) selected.filter { likedBefore.getValue(it.mid) != add } else selected
+        if (changes.isEmpty()) return
+        val result = rpc("music.musicasset.PlaylistDetailWrite", if (add) "AddSonglist" else "DelSonglist",
+            PlaylistSongWrites.parameters(dir, changes))
+        PlaylistSongWrites.confirm(result, playlist.id, dir, if (add) "添加" else "移除")
+        // Ordinary playlist writes only acknowledge the directory. Liked songs have a separate
+        // per-MID read API, so verify their actual state before the UI updates its heart icons.
+        if (dir == 201) {
+            val after = try { likedStatus(selected.map { it.mid }) }
+            catch (error: Exception) {
+                if (error is CancellationException) throw error
+                throw MusicApiException("QQ 音乐未确认喜欢状态的更改，请刷新歌单后查看", cause = error)
+            }
+            if (after.values.any { it != add }) {
+                throw MusicApiException("QQ 音乐未确认喜欢状态的更改，请刷新歌单后查看")
+            }
         }
     }
 
@@ -965,6 +991,46 @@ class QqMusicRepository(context: Context) {
         private const val WECHAT_CONNECT = "https://open.weixin.qq.com/connect/qrconnect"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val PNG_SIGNATURE = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
+    }
+}
+
+/** The account directory and write acknowledgement are distinct from a playlist's public ID. */
+internal object PlaylistSongWrites {
+    fun songs(songs: List<Song>): List<Song> {
+        val selected = songs.distinctBy { it.mid }
+        if (selected.size !in 1..100) throw MusicApiException("一次请选择 1–100 首歌曲")
+        if (selected.any { it.id <= 0 || it.mid.isBlank() || it.mid.startsWith("content:") || it.mid.startsWith("file:") }) {
+            throw MusicApiException("歌曲信息无效，请刷新后重试")
+        }
+        return selected
+    }
+
+    fun ownedDirectory(data: JSONObject, playlistId: String, musicId: String, allowLiked: Boolean, refusal: String): Int {
+        val entry = data.optJSONArray("v_playlist").objects().singleOrNull { it.number("tid").toString() == playlistId }
+        val dir = entry?.optInt("dirId") ?: 0
+        val ordinary = dir in 1 until 200 && entry?.optInt("dirType") == 0
+        val owner = entry?.opt("uin")?.takeUnless { it == JSONObject.NULL }?.toString().orEmpty()
+        if (entry == null || !(ordinary || allowLiked && dir == 201) ||
+            owner.isNotEmpty() && owner != musicId) throw MusicApiException(refusal)
+        return dir
+    }
+
+    fun parameters(dir: Int, songs: List<Song>): JSONObject =
+        json("dirId" to dir, "v_songInfo" to songs.map { json("songId" to it.id, "songType" to 0) })
+
+    fun confirm(data: JSONObject, playlistId: String, dir: Int, action: String) {
+        val result = data.optJSONObject("result")
+        if (data.optInt("retCode", -1) != 0 || result == null ||
+            result.number("tid").toString() != playlistId || result.optInt("dirId") != dir) {
+            throw MusicApiException("QQ 音乐未确认$action，请刷新歌单后查看")
+        }
+    }
+
+    fun likedStatus(data: JSONObject, mids: List<String>): Map<String, Boolean> {
+        val statuses = data.optJSONObject("m_fan") ?: throw MusicApiException("QQ 音乐未返回喜欢状态")
+        return mids.associateWith { mid ->
+            statuses.opt(mid) as? Boolean ?: throw MusicApiException("QQ 音乐未返回完整的喜欢状态，请刷新后查看")
+        }
     }
 }
 

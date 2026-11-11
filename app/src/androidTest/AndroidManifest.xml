@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="com.lilt.app.DeletionDocumentGrantActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+        <provider
+            android:name="com.lilt.app.DeletionDocumentsProvider"
+            android:authorities="com.lilt.app.test.deletion.documents"
+            android:exported="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS"
+            android:grantUriPermissions="true">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>
