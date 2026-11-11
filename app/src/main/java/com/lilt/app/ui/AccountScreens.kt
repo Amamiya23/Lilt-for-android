@@ -49,6 +49,10 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
     val liked = state.library.firstOrNull { it.dirId == 201 } ?: state.library.firstOrNull { it.title.contains("喜欢") }
     val created = state.library.filter { it.dirId > 0 && it != liked }
     val collected = state.library.filter { it.dirId == 0 && it != liked }
+    var creating by remember { mutableStateOf(false) }
+    if (creating) PlaylistNameDialog("新建歌单", "创建", onDismiss = { creating = false }) {
+        creating = false; vm.createPlaylist(it)
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = topPadding(4.dp), bottom = bottomPadding),
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item {
@@ -103,6 +107,8 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
         item {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("我创建的歌单", Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                if (profile != null) IconAction(Glyph.Plus, "新建歌单", tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    iconSize = 20.dp) { creating = true }
                 if (profile != null) IconAction(Glyph.Refresh, "刷新歌单", tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     iconSize = 20.dp, onClick = vm::refreshLibrary)
             }
@@ -112,7 +118,7 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
         } else if (state.libraryLoading && state.library.isEmpty()) item { LoadingState() }
         else if (state.libraryError != null && state.library.isEmpty()) item {
             EmptyState("歌单同步失败", state.libraryError, Glyph.Alert, "重试", onAction = vm::refreshLibrary)
-        } else if (created.isEmpty()) item { EmptyState("还没有歌单", "在 QQ 音乐中创建后，可在此同步", Glyph.Queue) }
+        } else if (created.isEmpty()) item { EmptyState("还没有歌单", glyph = Glyph.Queue, action = "新建歌单") { creating = true } }
         else items(created, key = { it.id }) { playlist ->
             PlaylistListRow(playlist.copy(creator = playlist.creator.ifBlank { profile.name })) { vm.openPlaylist(playlist) }
         }

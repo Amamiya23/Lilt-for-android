@@ -97,7 +97,7 @@ enum class Glyph(@param:DrawableRes val res: Int) {
     Plus(R.drawable.ic_plus), Close(R.drawable.ic_x), Refresh(R.drawable.ic_refresh),
     Check(R.drawable.ic_check), Clock(R.drawable.ic_clock), Music(R.drawable.ic_music),
     Headphones(R.drawable.ic_headphones), Volume(R.drawable.ic_volume), Moon(R.drawable.ic_moon),
-    Trash(R.drawable.ic_trash), Share(R.drawable.ic_share), Folder(R.drawable.ic_folder),
+    Trash(R.drawable.ic_trash), Edit(R.drawable.ic_pencil), Folder(R.drawable.ic_folder),
     Qr(R.drawable.ic_qrcode), Sort(R.drawable.ic_arrows_sort), Up(R.drawable.ic_arrow_up), Alert(R.drawable.ic_alert_circle),
     Clover(R.drawable.ic_clover), External(R.drawable.ic_external_link), Info(R.drawable.ic_info_circle),
     Logout(R.drawable.ic_logout), Adjust(R.drawable.ic_adjustments), Endless(R.drawable.ic_infinity),

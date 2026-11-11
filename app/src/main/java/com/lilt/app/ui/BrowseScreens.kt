@@ -2,7 +2,6 @@
 
 package com.lilt.app.ui
 
-import android.content.Intent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -25,7 +24,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -513,20 +511,55 @@ fun PlaylistListRow(playlist: Playlist, onClick: () -> Unit) {
     }
 }
 
+private enum class PlaylistEdit { Rename, Delete }
+
+/** A self-created playlist's actions, anchored to its button: rename it, or delete it after confirmation. */
+@Composable
+private fun PlaylistMenu(playlist: Playlist, onRename: (String) -> Unit, onDelete: () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    var edit by remember { mutableStateOf<PlaylistEdit?>(null) }
+    Box {
+        CircleAction(Glyph.More, "歌单操作", MaterialTheme.lilt.chipGlass) { expanded = true }
+        DropdownMenu(expanded, onDismissRequest = { expanded = false },
+            modifier = Modifier.widthIn(min = 180.dp), shape = RoundedCornerShape(24.dp),
+            containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, shadowElevation = 0.dp,
+            border = BorderStroke(1.dp, MaterialTheme.lilt.divider)) {
+            listOf(Triple(PlaylistEdit.Rename, Glyph.Edit, "重命名"), Triple(PlaylistEdit.Delete, Glyph.Trash, "删除歌单"))
+                .forEach { (target, glyph, label) ->
+                    val interaction = remember { MutableInteractionSource() }
+                    CompositionLocalProvider(LocalRippleConfiguration provides QuietRippleConfiguration) {
+                        DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; edit = target },
+                            modifier = Modifier.heightIn(min = 52.dp).pressFeedback(interaction, 1f, .64f),
+                            leadingIcon = { AppIcon(glyph, Modifier.size(20.dp)) },
+                            interactionSource = interaction, contentPadding = PaddingValues(horizontal = 20.dp))
+                    }
+                }
+        }
+    }
+    when (edit) {
+        PlaylistEdit.Rename -> PlaylistNameDialog("重命名歌单", "保存", playlist.title, onDismiss = { edit = null }) {
+            edit = null; onRename(it)
+        }
+        PlaylistEdit.Delete -> AlertDialog(onDismissRequest = { edit = null }, icon = { AppIcon(Glyph.Trash) },
+            title = { Text("删除「${playlist.title}」？") },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
+            dismissButton = { QuietTextButton({ edit = null }) { Text("取消") } },
+            confirmButton = {
+                QuietTextButton({ edit = null; onDelete() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("删除") }
+            })
+        null -> Unit
+    }
+}
+
 @Composable
 fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: (Song) -> Unit) {
-    val context = LocalContext.current
     val player by vm.player.collectAsStateWithLifecycle()
     val detail = state.detail ?: return
     val playlist = detail.playlist
-    val shareUrl = when {
-        playlist.id.startsWith("chart:") -> "https://y.qq.com/n/ryqq/toplist/${playlist.id.removePrefix("chart:")}"
-        playlist.id.startsWith("album:") -> "https://y.qq.com/n/ryqq/albumDetail/${playlist.id.removePrefix("album:")}"
-        playlist.id.startsWith("artist:") -> "https://y.qq.com/n/ryqq/singer/${playlist.id.removePrefix("artist:")}"
-        playlist.id.toLongOrNull() != null -> "https://y.qq.com/n/ryqq/playlist/${playlist.id}"
-        else -> null
-    }
     val round = playlist.id.startsWith("artist:")
+    // Only playlists this account created can be renamed or deleted; system directories (201 liked) cannot.
+    val editable = !state.preview && state.library.any { it.id == playlist.id && it.dirId in 1 until 200 }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding)) {
         item {
             Box {
@@ -540,12 +573,8 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                     horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         CircleAction(Glyph.Back, "返回", MaterialTheme.lilt.chipGlass, onClick = vm::back)
-                        if (shareUrl != null) CircleAction(Glyph.Share, "分享", MaterialTheme.lilt.chipGlass) {
-                            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "${playlist.title}\n$shareUrl")
-                            }, "分享"))
-                        }
+                        if (editable) PlaylistMenu(playlist, onRename = { vm.renamePlaylist(playlist, it) },
+                            onDelete = { vm.deletePlaylist(playlist) })
                     }
                     Artwork(playlist.cover, Modifier.size(188.dp).shadow(18.dp, RoundedCornerShape(if (round) 94.dp else 20.dp),
                         ambientColor = Radix.SlateDark1.copy(alpha = .25f), spotColor = Radix.SlateDark1.copy(alpha = .25f)),

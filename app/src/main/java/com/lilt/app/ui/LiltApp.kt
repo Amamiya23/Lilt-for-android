@@ -2,7 +2,6 @@
 
 package com.lilt.app.ui
 
-import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
@@ -21,7 +20,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +46,7 @@ private sealed interface SongMenu {
     data class Actions(val song: Song) : SongMenu
     data class Artists(val song: Song) : SongMenu
     data class AddTo(val song: Song) : SongMenu
+    data class Create(val song: Song) : SongMenu
     data object Quality : SongMenu
     data object Sleep : SongMenu
 }
@@ -60,7 +59,6 @@ fun LiltApp(vm: LiltViewModel) {
     val snackbar = remember { SnackbarHostState() }
     val tabStates = rememberSaveableStateHolder()
     var menu by remember { mutableStateOf<SongMenu?>(null) }
-    val context = LocalContext.current
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
     // The search keyboard must not stay over the player.
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
@@ -147,12 +145,6 @@ fun LiltApp(vm: LiltViewModel) {
                     menu = null
                     vm.download(song)
                 },
-                onShare = {
-                    menu = null
-                    val share = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,
-                        "${song.title} - ${song.artist}\nhttps://y.qq.com/n/ryqq/songDetail/${song.mid}")
-                    context.startActivity(Intent.createChooser(share, "分享歌曲"))
-                },
                 onArtist = {
                     val artists = song.artists.filter { it.mid.isNotBlank() }
                     when {
@@ -171,8 +163,12 @@ fun LiltApp(vm: LiltViewModel) {
         is SongMenu.Artists -> ArtistPickerSheet(current.song, dark, { menu = null }, { menu = SongMenu.Actions(current.song) }) {
             menu = null; vm.showPlayer(false); vm.openArtist(it)
         }
-        is SongMenu.AddTo -> PlaylistPickerSheet(state.library.filter { it.dirId in 1 until 200 }, dark, { menu = null }) {
+        is SongMenu.AddTo -> PlaylistPickerSheet(state.library.filter { it.dirId in 1 until 200 }, dark, { menu = null },
+            onCreate = { menu = SongMenu.Create(current.song) }) {
             vm.addToPlaylist(current.song, it); menu = null
+        }
+        is SongMenu.Create -> PlaylistNameDialog("新建歌单", "创建", onDismiss = { menu = null }) {
+            vm.createPlaylist(it, current.song); menu = null
         }
         SongMenu.Quality -> ChoiceSheet("在线播放音质", QualityOptions, state.quality, { menu = null }, dark) {
             vm.setQuality(it); menu = null; vm.notify("将在下一首歌曲生效")

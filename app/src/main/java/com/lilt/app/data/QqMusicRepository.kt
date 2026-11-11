@@ -620,19 +620,66 @@ class QqMusicRepository(context: Context) {
     }
 
     /** Only ordinary playlists this account created can be edited; system directories (201 liked, 202 daily) cannot. */
-    suspend fun addToPlaylist(song: Song, playlist: Playlist) {
+    private suspend fun ownedDir(playlist: Playlist, refusal: String): Int {
         val s = signedSession()
         val entry = rpc("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", json("uin" to s.musicId))
             .optJSONArray("v_playlist").objects().singleOrNull { it.number("tid").toString() == playlist.id }
         val dir = entry?.optInt("dirId") ?: 0
         if (entry == null || dir !in 1 until 200 || entry.optInt("dirType") != 0 ||
-            entry.text("uin").let { it.isNotEmpty() && it != s.musicId }) throw MusicApiException("只能添加到自己创建的普通歌单")
+            entry.text("uin").let { it.isNotEmpty() && it != s.musicId }) throw MusicApiException(refusal)
+        return dir
+    }
+
+    suspend fun addToPlaylist(song: Song, playlist: Playlist) {
+        val dir = ownedDir(playlist, "只能添加到自己创建的普通歌单")
         val result = rpc("music.musicasset.PlaylistDetailWrite", "AddSonglist",
             json("dirId" to dir, "v_songInfo" to listOf(json("songId" to song.id, "songType" to 0))))
         val confirmed = result.optJSONObject("result")
         if (result.optInt("retCode", -1) != 0 || confirmed == null ||
             confirmed.number("tid").toString() != playlist.id || confirmed.optInt("dirId") != dir) {
             throw MusicApiException("QQ 音乐未确认添加，请稍后在歌单中查看")
+        }
+    }
+
+    /** A name already in use is not refused; the service appends a timestamp, so the returned name is the real one. */
+    suspend fun createPlaylist(name: String): Playlist {
+        signedSession()
+        val result = rpc("music.musicasset.PlaylistBaseWrite", "AddPlaylist", json("dirName" to name))
+        val created = result.optJSONObject("result")?.takeIf { result.optInt("retCode", -1) == 0 }
+        val tid = created?.number("tid") ?: 0
+        val dir = created?.optInt("dirId") ?: 0
+        if (created == null || tid <= 0 || dir !in 1 until 200) throw MusicApiException("QQ 音乐未确认创建，请稍后在歌单中查看")
+        return Playlist(tid.toString(), created.text("dirName").ifBlank { name }, dirId = dir)
+    }
+
+    /**
+     * The edit writes every field its mask names, so the description, covers, tags and visibility
+     * are read back first and sent unchanged alongside the new name.
+     */
+    suspend fun renamePlaylist(playlist: Playlist, name: String) {
+        val dir = ownedDir(playlist, "只能重命名自己创建的歌单")
+        val info = rpc("music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo",
+            json("dirid" to dir, "optype" to 3, "tag" to 1, "userinfo" to 0, "pic_dpi" to 300)).optJSONObject("dirinfo")
+        if (info == null || !info.has("dir_show")) throw MusicApiException("无法读取歌单信息，请稍后再试")
+        val result = rpc("music.musicasset.PlaylistBaseWrite", "EditPlaylist", json(
+            "dirId" to dir, "mask" to 95, "dirNewName" to name, "dirNewDesc" to info.text("desc"),
+            "dirNewPicUrl" to info.text("picurl"), "dirNewPicUrl2" to info.text("picurl2"),
+            "dirNewtaglist" to info.optJSONArray("tag").objects().map { it.number("id") }.filter { it > 0 }.joinToString(","),
+            "dirShow" to info.optInt("dir_show"),
+        ))
+        val confirmed = result.optJSONObject("result")
+        if (result.optInt("retCode", -1) != 0 || confirmed == null ||
+            confirmed.number("tid").toString() != playlist.id || confirmed.optInt("dirId") != dir) {
+            throw MusicApiException("QQ 音乐未确认重命名，请稍后在歌单中查看")
+        }
+    }
+
+    suspend fun deletePlaylist(playlist: Playlist) {
+        val dir = ownedDir(playlist, "只能删除自己创建的歌单")
+        val result = rpc("music.musicasset.PlaylistBaseWrite", "DelPlaylist", json("dirId" to dir))
+        // A directory that no longer exists is answered with dirId 0 rather than an error.
+        if (result.optInt("retCode", -1) != 0 || result.optJSONObject("result")?.optInt("dirId") != dir) {
+            throw MusicApiException("QQ 音乐未确认删除，请稍后在歌单中查看")
         }
     }
 

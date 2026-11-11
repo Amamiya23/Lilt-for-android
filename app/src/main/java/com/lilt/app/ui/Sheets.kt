@@ -11,8 +11,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,11 +77,13 @@ fun SheetRow(colors: SheetColors, glyph: Glyph, label: String, value: String? = 
     }
 }
 
+private data class SheetTile(val glyph: Glyph, val label: String, val onClick: () -> Unit, val tint: Color? = null)
+
 /** A song's actions. On the player it adds playback quality and the sleep timer; liking lives on the player itself. */
 @Composable
 fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: String, sleepLabel: String,
               onDismiss: () -> Unit, onPlayNext: () -> Unit, onAddToPlaylist: () -> Unit, onDownload: () -> Unit,
-              onShare: () -> Unit, onArtist: () -> Unit, onAlbum: (() -> Unit)?, onLike: () -> Unit,
+              onArtist: () -> Unit, onAlbum: (() -> Unit)?, onLike: () -> Unit,
               onQuality: () -> Unit, onSleep: () -> Unit) {
     LiltSheet(onDismiss, dark = fromPlayer) { colors ->
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -91,22 +97,22 @@ fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: Str
         }
         val online = !song.mid.startsWith("content:")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            val likeTint = if (liked) MaterialTheme.lilt.like else colors.content
             listOfNotNull(
-                Triple(Glyph.PlayNext, "下一首播放", onPlayNext),
-                if (online) Triple(Glyph.PlaylistAdd, "添加到歌单", onAddToPlaylist) else null,
-                if (online) Triple(Glyph.Download, "下载", onDownload) else null,
-                Triple(Glyph.Share, "分享", onShare),
-            ).forEach { (glyph, label, action) ->
+                if (online && !fromPlayer) SheetTile(Glyph.Heart, if (liked) "已喜欢" else "喜欢", onLike, likeTint) else null,
+                SheetTile(Glyph.PlayNext, "下一首播放", onPlayNext),
+                if (online) SheetTile(Glyph.PlaylistAdd, "添加到歌单", onAddToPlaylist) else null,
+                if (online) SheetTile(Glyph.Download, "下载", onDownload) else null,
+            ).forEach { (glyph, label, action, tint) ->
                 Column(Modifier.weight(1f).height(76.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile).quietClickable(onClick = action),
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    AppIcon(glyph, Modifier.size(22.dp), colors.content)
+                    AppIcon(glyph, Modifier.size(22.dp), tint ?: colors.content)
                     Spacer(Modifier.height(8.dp))
                     Text(label, fontSize = 11.sp, color = colors.content.copy(alpha = .8f), maxLines = 1)
                 }
             }
         }
         if (online) SheetGroup(colors) {
-            if (!fromPlayer) SheetRow(colors, Glyph.Heart, if (liked) "取消喜欢" else "喜欢", divider = true, onClick = onLike)
             SheetRow(colors, Glyph.User, "查看歌手", song.artist, divider = onAlbum != null, onClick = onArtist)
             if (onAlbum != null) SheetRow(colors, Glyph.Disc, "查看专辑", song.album, onClick = onAlbum)
         }
@@ -143,14 +149,39 @@ fun ArtistPickerSheet(song: Song, dark: Boolean, onDismiss: () -> Unit, onBack: 
     }
 }
 
+/** Names a playlist; QQ Music caps names at 20 characters and keeps the trimmed text. */
 @Composable
-fun PlaylistPickerSheet(playlists: List<Playlist>, dark: Boolean, onDismiss: () -> Unit, onPick: (Playlist) -> Unit) {
+fun PlaylistNameDialog(title: String, confirm: String, initial: String = "", onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var name by remember { mutableStateOf(TextFieldValue(initial, TextRange(initial.length))) }
+    val trimmed = name.text.trim()
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
+        text = {
+            OutlinedTextField(name, { name = if (it.text.length > 20) it.copy(it.text.take(20)) else it }, singleLine = true,
+                shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().focusRequester(focus))
+        },
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
+        dismissButton = { QuietTextButton(onDismiss) { Text("取消") } },
+        confirmButton = {
+            QuietTextButton({ onConfirm(trimmed) }, enabled = trimmed.isNotEmpty() && trimmed != initial) { Text(confirm) }
+        })
+}
+
+@Composable
+fun PlaylistPickerSheet(playlists: List<Playlist>, dark: Boolean, onDismiss: () -> Unit, onCreate: () -> Unit, onPick: (Playlist) -> Unit) {
     LiltSheet(onDismiss, dark) { colors ->
         Text("添加到歌单", fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp))
-        if (playlists.isEmpty()) Text("还没有可编辑的歌单，可以先在 QQ 音乐中创建", fontSize = 14.sp, color = colors.secondary,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp))
-        else Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile)
+        Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile)
             .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Row(Modifier.fillMaxWidth().height(64.dp).quietClickable(onClick = onCreate), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(colors.divider), contentAlignment = Alignment.Center) {
+                    AppIcon(Glyph.Plus, Modifier.size(22.dp), colors.content)
+                }
+                Text("新建歌单", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            }
+            if (playlists.isNotEmpty()) HorizontalDivider(thickness = 1.dp, color = colors.divider)
             playlists.forEachIndexed { index, playlist ->
                 Row(Modifier.fillMaxWidth().height(64.dp).quietClickable { onPick(playlist) }, verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp)) {

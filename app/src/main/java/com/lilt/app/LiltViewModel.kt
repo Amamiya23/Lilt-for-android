@@ -529,6 +529,53 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    /** Creates a playlist, then files [song] into it when the name was asked for from a song's menu. */
+    fun createPlaylist(name: String, song: Song? = null) {
+        viewModelScope.launch {
+            try {
+                val playlist = repository.createPlaylist(name)
+                if (song != null) {
+                    repository.addToPlaylist(song, playlist)
+                    notify("已添加到新歌单「${playlist.title}」")
+                } else notify("已创建「${playlist.title}」")
+                refreshLibrary()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+                refreshLibrary()
+            }
+        }
+    }
+    fun renamePlaylist(playlist: Playlist, name: String) {
+        viewModelScope.launch {
+            try {
+                repository.renamePlaylist(playlist, name)
+                mutable.update { s ->
+                    val detail = s.detail?.takeIf { it.playlist.id == playlist.id }
+                    s.copy(detail = detail?.copy(playlist = detail.playlist.copy(title = name)) ?: s.detail)
+                }
+                notify("已重命名为「$name」")
+                refreshLibrary()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+            }
+        }
+    }
+    fun deletePlaylist(playlist: Playlist) {
+        viewModelScope.launch {
+            try {
+                repository.deletePlaylist(playlist)
+                val s = state.value
+                if (s.destination == Destination.Playlist && s.detail?.playlist?.id == playlist.id) back()
+                notify("已删除「${playlist.title}」")
+                refreshLibrary()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+            }
+        }
+    }
     fun setEndless(enabled: Boolean) {
         if (enabled && profile.value == null && !state.value.preview) { notify("登录后可在播完时继续播放私人电台"); return }
         preferences.edit().putBoolean("endless", enabled).apply()
