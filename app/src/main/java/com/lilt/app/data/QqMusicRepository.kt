@@ -594,22 +594,29 @@ class QqMusicRepository(context: Context) {
         return albums
     }
 
-    suspend fun purchasedSongs(): List<Song> {
+    suspend fun purchasedSongs(): List<Song> =
+        purchasedOrders("2", "songlist", MusicParsers::songs).also(::remember)
+
+    suspend fun purchasedAlbums(): List<Album> =
+        purchasedOrders("1", "albumlist") { entries -> entries.objects().mapNotNull(MusicParsers::libraryAlbum) }
+
+    private suspend fun <T> purchasedOrders(type: String, list: String, parse: (JSONArray) -> List<T>): List<T> {
         val s = signedSession()
         val tk = hash33(s.musicKey, 5381).toString()
-        val songs = mutableListOf<Song>()
-        while (songs.size < 2000) {
-            val data = cgi("/shop/fcgi-bin/fcg_get_order", mapOf("from" to "1", "cmd" to "sales_album", "type" to "2",
-                "uin" to s.musicId, "start" to "${songs.size}", "num" to "100", "platform" to "yqq", "ct" to "24",
+        val orders = mutableListOf<T>()
+        var offset = 0
+        while (offset < 2000) {
+            val data = cgi("/shop/fcgi-bin/fcg_get_order", mapOf("from" to "1", "cmd" to "sales_album", "type" to type,
+                "uin" to s.musicId, "start" to "$offset", "num" to "100", "platform" to "yqq", "ct" to "24",
                 "cv" to "4747474", "inCharset" to "utf-8", "notice" to "0", "needNewCode" to "1", "g_tk" to tk,
                 "g_tk_new_20200303" to tk)).optJSONObject("data") ?: throw MusicApiException("QQ 音乐未返回已购音乐")
-            checkInnerStatus(data)
-            val total = data.optInt("total", -1).takeIf { it >= 0 } ?: throw MusicApiException("QQ 音乐未返回已购音乐")
-            val page = MusicParsers.songs(data.optJSONArray("songlist"))
-            songs += page
-            if (page.isEmpty() || songs.size >= total) break
+            val (page, more) = MusicParsers.purchasedPage(data, list, offset)
+            orders += parse(page)
+            // Order offsets count every received entry, including records without usable catalog metadata.
+            offset += page.length()
+            if (!more) break
         }
-        return songs.also(::remember)
+        return orders
     }
 
     /** Only ordinary playlists this account created can be edited; system directories (201 liked, 202 daily) cannot. */
@@ -955,13 +962,29 @@ internal object MusicParsers {
 
     fun libraryAlbum(item: JSONObject): Album? {
         val id = item.number("albumid", "albumID", "id")
-        val mid = item.text("albummid", "albumMID", "albumMid", "mid")
+        val mid = item.text("albummid", "albumMID", "albumMid", "album_mid", "mid", "pmid")
         if (id <= 0) return null
         val artist = (item.optJSONArray("singers") ?: item.optJSONArray("singer")).objects()
             .joinToString(" / ") { it.text("name", "singername", "singer_name", "singerName") }
-            .ifBlank { item.text("singername", "singerName") }
-        return Album(mid, id, item.text("albumname", "albumName", "name", "title"), artist,
-            cover(mid).ifBlank { item.text("picurl", "picUrl", "albumPicUrl").https() })
+            .ifBlank { item.text("singername", "singerName", "singer_name", "singer") }
+        val photoMid = item.text("pmid").ifBlank { item.optJSONObject("photo")?.text("pic_mid").orEmpty() }.ifBlank { mid }
+        return Album(mid, id, item.text("albumname", "albumName", "album_name", "name", "title"), artist,
+            cover(photoMid).ifBlank { item.text("picurl", "picUrl", "albumPicUrl").https() })
+    }
+
+    /** A purchase page advances by raw order count, not the number of usable songs or albums. */
+    fun purchasedPage(data: JSONObject, list: String, offset: Int): Pair<JSONArray, Boolean> {
+        checkInnerStatus(data)
+        val total = data.opt("total")?.toString()?.toIntOrNull()?.takeIf { it >= 0 }
+            ?: throw MusicApiException("QQ 音乐未返回有效的已购音乐总数")
+        val raw = data.opt(list)
+        val entries = when {
+            (raw == null || raw == JSONObject.NULL) && total == 0 -> JSONArray()
+            raw is JSONArray -> raw
+            else -> throw MusicApiException("QQ 音乐未返回有效的已购音乐列表")
+        }
+        if (entries.length() == 0 && offset < total) throw MusicApiException("QQ 音乐返回的已购音乐列表不完整")
+        return entries to (offset.toLong() + entries.length() < total)
     }
 
     /** A membership date: yyyy-MM-dd[ HH:mm:ss] or unix seconds in China time; anything else is unknown. */

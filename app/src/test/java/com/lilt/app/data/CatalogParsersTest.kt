@@ -2,8 +2,10 @@ package com.lilt.app.data
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class CatalogParsersTest {
@@ -42,6 +44,67 @@ class CatalogParsersTest {
         assertEquals(3, owned.dirId)
         val collected = requireNotNull(MusicParsers.libraryPlaylist(JSONObject("""{"tid":78,"dissname":"别人的歌单"}""")))
         assertEquals(0, collected.dirId)
+    }
+
+    @Test fun purchasedAlbumsKeepOrderFieldsAndNumericIdentity() {
+        val legacy = requireNotNull(MusicParsers.libraryAlbum(JSONObject(
+            """{"albumID":701,"albumMid":"album-order-mid","albumName":"Album","singerName":"Singer"}""")))
+        assertEquals(701L, legacy.id)
+        assertEquals("album-order-mid", legacy.mid)
+        assertEquals("Album", legacy.title)
+        assertEquals("Singer", legacy.artist)
+        val photoMid = requireNotNull(MusicParsers.libraryAlbum(JSONObject(
+            """{"id":702,"pmid":"photo-mid","name":"Second","singers":[{"name":"Two"}]}""")))
+        assertEquals("photo-mid", photoMid.mid)
+        assertEquals("Two", photoMid.artist)
+        assertTrue(photoMid.cover.contains("photo-mid"))
+        val numeric = requireNotNull(MusicParsers.libraryAlbum(JSONObject("""{"albumID":703,"albumName":"Third"}""")))
+        assertEquals(703L, numeric.id)
+        assertEquals("", numeric.mid)
+        val order = requireNotNull(MusicParsers.libraryAlbum(JSONObject(
+            """{"albumid":704,"albummid":"order-mid","album_name":"Purchased Album","singer":"Artist"}""")))
+        assertEquals("Purchased Album", order.title)
+        assertEquals("Artist", order.artist)
+        assertEquals("order-mid", order.mid)
+        val separatePhoto = requireNotNull(MusicParsers.libraryAlbum(JSONObject(
+            """{"albumid":705,"albummid":"catalog-mid","album_name":"Album","photo":{"pic_mid":"artwork-mid"}}""")))
+        assertEquals("catalog-mid", separatePhoto.mid)
+        assertTrue(separatePhoto.cover.contains("artwork-mid"))
+    }
+
+    @Test fun purchasePagesCountRawOrdersBeforeCatalogFiltering() {
+        val first = MusicParsers.purchasedPage(JSONObject(
+            """{"total":3,"albumlist":[{"albumID":701,"albumMid":"mid"},{"albumName":"Unavailable"}]}"""),
+            "albumlist", 0)
+        assertEquals(2, first.first.length())
+        assertTrue(first.second)
+        assertNull(MusicParsers.libraryAlbum(first.first.getJSONObject(1)))
+        val last = MusicParsers.purchasedPage(JSONObject(
+            """{"total":3,"albumlist":[{"albumID":703}]}"""), "albumlist", first.first.length())
+        assertEquals(1, last.first.length())
+        assertFalse(last.second)
+        val songs = MusicParsers.purchasedPage(JSONObject(
+            """{"total":1,"songlist":[{"songid":501,"songmid":"song-mid","songname":"Single"}]}"""), "songlist", 0)
+        assertEquals("song-mid", MusicParsers.songs(songs.first).single().mid)
+        assertFalse(songs.second)
+    }
+
+    @Test fun purchasePagesDistinguishEmptyLibrariesFromInvalidResponses() {
+        for (list in listOf("songlist", "albumlist")) {
+            for (empty in listOf("""{"total":0}""", """{"total":0,"$list":null}""", """{"total":0,"$list":[]}""")) {
+                val page = MusicParsers.purchasedPage(JSONObject(empty), list, 0)
+                assertEquals(0, page.first.length())
+                assertFalse(page.second)
+            }
+            for (invalid in listOf("""{}""", """{"total":-1}""", """{"total":1.5}""",
+                """{"total":1}""", """{"total":1,"$list":null}""", """{"total":0,"$list":{}}""",
+                """{"total":1,"$list":[]}""", """{"code":104401,"total":0}""")) {
+                try {
+                    MusicParsers.purchasedPage(JSONObject(invalid), list, 0)
+                    fail("Accepted invalid purchased music response: $invalid")
+                } catch (_: MusicApiException) { }
+            }
+        }
     }
 
     // Each credited artist keeps the MID its page needs.

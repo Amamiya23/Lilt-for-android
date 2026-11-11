@@ -25,6 +25,8 @@ data class Playlist(
     val preview: List<Pair<String, String>> = emptyList(),
     /** The account-local directory of a playlist this account created (201 is 我喜欢); 0 for collected lists. */
     val dirId: Int = 0,
+    /** Numeric identity retained when an album order has no MID. */
+    val albumId: Long = 0,
 )
 
 data class HomeFeed(

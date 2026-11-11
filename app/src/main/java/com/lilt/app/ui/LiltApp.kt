@@ -105,6 +105,7 @@ fun LiltApp(vm: LiltViewModel) {
                                 Destination.Playlist -> PlaylistScreen(state, vm, bottomPadding, onMore)
                                 Destination.Playlists -> PlaylistCollectionScreen(state, vm, bottomPadding)
                                 Destination.Albums -> AlbumCollectionScreen(state, vm, bottomPadding)
+                                Destination.Purchased -> PurchasedScreen(state, vm, bottomPadding, onMore)
                                 Destination.Local -> LocalScreen(state, vm, bottomPadding, onMore)
                             } }
                             if (state.destination == Destination.Home || state.destination == Destination.Search || state.destination == Destination.Library) {

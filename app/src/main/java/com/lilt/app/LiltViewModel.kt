@@ -19,8 +19,9 @@ import kotlinx.coroutines.flow.*
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Local }
+enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Purchased, Local }
 enum class PlayerPanel { Artwork, Lyrics, Queue }
+enum class PurchasedTab(val label: String) { Albums("专辑"), Songs("单曲") }
 
 data class AppState(
     val destination: Destination = Destination.Home,
@@ -64,6 +65,11 @@ data class AppState(
     val collectionAlbums: List<Album> = emptyList(),
     val collectionLoading: Boolean = false,
     val collectionError: String? = null,
+    val purchasedTab: PurchasedTab = PurchasedTab.Albums,
+    val purchasedSongs: List<Song>? = null,
+    val purchasedAlbums: List<Album>? = null,
+    val purchasedLoading: Boolean = false,
+    val purchasedError: String? = null,
     /** Where the queue came from, as 来自歌单 · 深夜城市漫游. */
     val queueSource: String = "",
     /** Continue with the personal FM when the queue runs out. */
@@ -105,6 +111,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     private val songBook = mutableMapOf<String, Song>()
     private var searchJob: Job? = null
     private var detailJob: Job? = null
+    private var purchasedJob: Job? = null
     private var qrJob: Job? = null
     private var lyricJob: Job? = null
     private var radioJob: Job? = null
@@ -304,9 +311,8 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                 val id = playlist.id
                 val detail = when {
                     state.value.preview -> PlaylistDetail(playlist, PreviewContent.songs)
-                    id.startsWith("album:") -> repository.album(Album(id.removePrefix("album:"), 0, playlist.title, playlist.creator, playlist.cover))
+                    id.startsWith("album:") -> repository.album(Album(id.removePrefix("album:"), playlist.albumId, playlist.title, playlist.creator, playlist.cover))
                     id.startsWith("artist:") -> repository.artist(Artist(id.removePrefix("artist:"), 0, playlist.title, playlist.cover))
-                    id == "purchased" -> repository.purchasedSongs().let { PlaylistDetail(playlist.copy(trackCount = it.size), it) }
                     else -> repository.playlist(id)
                 }
                 songBook.putAll(detail.songs.associateBy { it.mid })
@@ -374,6 +380,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         }.orEmpty()
         Destination.Search -> "来自搜索 · ${state.value.query}"
         Destination.Local -> "来自本地音乐"
+        Destination.Purchased -> "来自已购音乐"
         else -> ""
     }
     /** The quality is part of the address, so cached audio of another quality is not reused. */
@@ -427,7 +434,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { repository.membership() }.onSuccess { m -> mutable.update { it.copy(membership = m) } }
         }
     }
-    fun openAlbum(album: Album) = openPlaylist(Playlist("album:${album.mid}", album.title, album.cover, album.artist))
+    fun openAlbum(album: Album) = openPlaylist(Playlist("album:${album.mid}", album.title, album.cover, album.artist, albumId = album.id))
     fun openArtist(artist: Artist) = openPlaylist(Playlist("artist:${artist.mid}", artist.name, artist.cover))
     fun playPlaylist(playlist: Playlist) {
         if (state.value.preview) { play(PreviewContent.songs); return }
@@ -458,8 +465,42 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun openLikedAlbums() = openAlbums("收藏的专辑") { repository.likedAlbums() }
     fun openPurchased() {
-        if (profile.value == null) { navigate(Destination.Login); return }
-        openPlaylist(Playlist("purchased", "已购音乐"))
+        if (profile.value == null && !state.value.preview) { navigate(Destination.Login); return }
+        go(Destination.Purchased)
+        mutable.update { it.copy(purchasedTab = PurchasedTab.Albums, purchasedSongs = null, purchasedAlbums = null) }
+        loadPurchased(PurchasedTab.Albums)
+    }
+    fun selectPurchasedTab(tab: PurchasedTab) {
+        if (state.value.purchasedTab == tab) return
+        loadPurchased(tab)
+    }
+    fun retryPurchased() = loadPurchased(state.value.purchasedTab)
+    private fun loadPurchased(tab: PurchasedTab) {
+        purchasedJob?.cancel()
+        val cached = when (tab) {
+            PurchasedTab.Songs -> state.value.purchasedSongs != null
+            PurchasedTab.Albums -> state.value.purchasedAlbums != null
+        }
+        mutable.update { it.copy(purchasedTab = tab, purchasedLoading = !cached, purchasedError = null) }
+        if (cached) return
+        purchasedJob = viewModelScope.launch {
+            try {
+                when (tab) {
+                    PurchasedTab.Songs -> {
+                        val songs = if (state.value.preview) PreviewContent.songs else repository.purchasedSongs()
+                        songBook.putAll(songs.associateBy { it.mid })
+                        mutable.update { it.copy(purchasedSongs = songs, purchasedLoading = false) }
+                    }
+                    PurchasedTab.Albums -> {
+                        val albums = if (state.value.preview) PreviewContent.albums else repository.purchasedAlbums()
+                        mutable.update { it.copy(purchasedAlbums = albums, purchasedLoading = false) }
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                mutable.update { it.copy(purchasedLoading = false, purchasedError = readable(error)) }
+            }
+        }
     }
     private fun openAlbums(title: String, load: suspend () -> List<Album>) {
         if (profile.value == null && !state.value.preview) { navigate(Destination.Login); return }
@@ -699,6 +740,10 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
 
 private object PreviewContent {
     private fun cover(index: Int) = "file:///android_asset/design/generated${if (index == 0) "" else "-$index"}.png"
+    val albums = listOf(
+        Album("preview-album-1", 1, "叶惠美", "周杰伦", cover(4)),
+        Album("preview-album-2", 2, "唱游", "王菲", cover(0)),
+    )
     val songs = listOf(
         Song("preview-1", 1, "晴天", "周杰伦", "叶惠美", cover(4), 269000),
         Song("preview-2", 2, "夜曲", "周杰伦", "十一月的萧邦", cover(3), 226000),

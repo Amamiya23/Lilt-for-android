@@ -4,8 +4,11 @@ package com.lilt.app.ui
 
 import android.content.Intent
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -274,6 +277,63 @@ fun AlbumCollectionScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp)
             state.collectionError != null -> item { EmptyState("加载失败", state.collectionError, Glyph.Alert, "重试") { vm.back(); vm.openLikedAlbums() } }
             state.collectionAlbums.isEmpty() -> item { EmptyState("还没有收藏的专辑", "在 QQ 音乐中收藏后，可在此查看", Glyph.Disc) }
             else -> items(state.collectionAlbums, key = { "album-${it.id}" }) { album -> AlbumRow(album) { vm.openAlbum(album) } }
+        }
+    }
+}
+
+@Composable
+fun PurchasedScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: (Song) -> Unit) {
+    val player by vm.player.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize().padding(top = topPadding(4.dp))) {
+        Box(Modifier.padding(horizontal = 20.dp)) { BackBar("已购音乐", vm) }
+        Row(Modifier.selectableGroup().padding(horizontal = 20.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PurchasedTab.entries.forEach { tab ->
+                val selected = state.purchasedTab == tab
+                val source = remember { MutableInteractionSource() }
+                Box(Modifier.heightIn(min = 48.dp).clip(CircleShape)
+                    .background(if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface)
+                    .quietIndication(source).pressFeedback(source, pressedScale = 1f)
+                    .selectable(selected, interactionSource = source, indication = null, role = Role.Tab,
+                        onClick = { vm.selectPurchasedTab(tab) })
+                    .padding(horizontal = 20.dp), contentAlignment = Alignment.Center) {
+                    Text(tab.label, style = MaterialTheme.typography.labelLarge,
+                        color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
+        key(state.purchasedTab) {
+            LazyColumn(Modifier.weight(1f).testTag("purchased-list"),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottomPadding),
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                when {
+                    state.purchasedLoading -> item { LoadingState() }
+                    state.purchasedError != null -> item {
+                        EmptyState("加载失败", state.purchasedError, Glyph.Alert, "重试", onAction = vm::retryPurchased)
+                    }
+                    state.purchasedTab == PurchasedTab.Albums -> {
+                        val albums = state.purchasedAlbums.orEmpty()
+                        if (albums.isEmpty()) item { EmptyState("还没有已购专辑", glyph = Glyph.Disc) }
+                        items(albums, key = { "album-${it.id}" }) { album -> AlbumRow(album) { vm.openAlbum(album) } }
+                    }
+                    else -> {
+                        val songs = state.purchasedSongs.orEmpty()
+                        if (songs.isEmpty()) item { EmptyState("还没有已购单曲", glyph = Glyph.Music) }
+                        else item {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("${songs.size} 首", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                SoftPill("播放全部", Glyph.Music) { vm.play(songs) }
+                                IconAction(Glyph.Shuffle, "随机播放", tint = MaterialTheme.colorScheme.primary,
+                                    onClick = { vm.play(songs, shuffle = true) })
+                            }
+                        }
+                        itemsIndexed(songs, key = { _, song -> song.mid }) { index, song ->
+                            SongRow(song, { vm.play(songs, index) }, { onMore(song) }, active = player.current?.id == song.mid)
+                        }
+                    }
+                }
+            }
         }
     }
 }
