@@ -3,8 +3,12 @@ package com.lilt.app
 import android.app.Application
 import android.app.DownloadManager
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Environment
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lilt.app.data.*
@@ -79,6 +83,14 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     val player = playback.state
     val profile = repository.profile
     private val preferences = application.getSharedPreferences("lilt_settings", Context.MODE_PRIVATE)
+    private val downloads = DownloadLibrary(application)
+    private var downloadedSongs: List<Song> = emptyList()
+    private var localRefreshJob: Job? = null
+    private val downloadReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE) refreshLocal()
+        }
+    }
     private val mutable = MutableStateFlow(AppState(
         theme = ThemeMode.entries.firstOrNull { it.name == preferences.getString("theme", "") } ?: ThemeMode.System,
         quality = preferences.getString("quality", "standard") ?: "standard",
@@ -104,6 +116,9 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         songBook.putAll((state.value.local + state.value.recent).associateBy { it.mid })
+        ContextCompat.registerReceiver(application, downloadReceiver,
+            IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED)
+        refreshLocal()
         refreshHome()
         viewModelScope.launch { if (profile.value != null) runCatching { repository.refreshProfile() } }
         viewModelScope.launch { runCatching { playback.connect() }.onFailure { notify("播放器连接失败，请重试") } }
@@ -170,9 +185,11 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
 
     fun notify(message: String) { events.tryEmit(message) }
     fun navigate(destination: Destination) {
+        if (state.value.destination == destination) return
         go(destination)
-        if (destination == Destination.Library) refreshLibrary()
+        // Profile changes and the refresh action load the library; switching tabs only reveals the cached page.
         if (destination == Destination.Login) refreshQr()
+        if (destination == Destination.Local) refreshLocal()
     }
     private fun go(destination: Destination) {
         val current = state.value.destination
@@ -210,7 +227,10 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                 topLevel = if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) destination else it.topLevel) }
         }
     }
-    fun showPlayer(open: Boolean) { mutable.update { it.copy(playerOpen = open, playerPanel = PlayerPanel.Artwork) } }
+    fun showPlayer(open: Boolean) {
+        // Keep the current panel visible throughout dismissal; a fresh opening starts with artwork.
+        mutable.update { it.copy(playerOpen = open, playerPanel = if (open) PlayerPanel.Artwork else it.playerPanel) }
+    }
     fun setPlayerPanel(panel: PlayerPanel) { mutable.update { it.copy(playerPanel = panel) } }
     fun setTheme(mode: ThemeMode) {
         preferences.edit().putString("theme", mode.name).apply()
@@ -379,6 +399,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                 val liked = !repository.isLiked(song.mid)
                 repository.like(song, liked)
                 mutable.update { it.copy(liked = if (liked) it.liked + song.mid else it.liked - song.mid) }
+                refreshLibrary()
                 notify(if (liked) "已添加到我喜欢" else "已取消喜欢")
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -396,6 +417,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 mutable.update { it.copy(libraryLoading = false, libraryError = readable(error)) }
+                if (state.value.library.isNotEmpty()) notify("歌单同步失败，请稍后重试")
             }
         }
     }
@@ -593,10 +615,26 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
             Song(uri.toString(), uri.hashCode().toLong(), title.substringBeforeLast("."), "本地音乐")
         }
-        val local = (state.value.local + songs).distinctBy { it.mid }
+        // Keep imported documents separate from system downloads so a refresh can reflect removed downloads.
+        val imported = (readSongs("local") + songs).distinctBy { it.mid }
+        saveSongs("local", imported)
+        val local = (downloadedSongs + imported).distinctBy { it.mid }
         songBook.putAll(local.associateBy { it.mid })
-        saveSongs("local", local)
         mutable.update { it.copy(local = local) }
+    }
+    fun refreshLocal() {
+        localRefreshJob?.cancel()
+        localRefreshJob = viewModelScope.launch {
+            val completed = try { withContext(Dispatchers.IO) { downloads.completed() } }
+            catch (error: Exception) {
+                if (error is CancellationException) throw error
+                return@launch
+            }
+            downloadedSongs = completed
+            val local = (completed + readSongs("local")).distinctBy { it.mid }
+            songBook.putAll(local.associateBy { it.mid })
+            mutable.update { it.copy(local = local) }
+        }
     }
     fun download(song: Song) {
         if (state.value.preview) { notify("设计预览不下载示例音频"); return }
@@ -610,8 +648,10 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                     .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     .setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "Lilt/$filename")
                     .addRequestHeader("Referer", "https://y.qq.com/")
-                getApplication<Application>().getSystemService(DownloadManager::class.java).enqueue(request)
-                notify("已开始下载，可在系统下载中查看")
+                val id = getApplication<Application>().getSystemService(DownloadManager::class.java).enqueue(request)
+                downloads.remember(id, song)
+                refreshLocal()
+                notify("已开始下载，完成后可在本地与下载中播放")
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 notify(readable(error))
@@ -650,7 +690,11 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         preferences.edit().putString(key, array.toString()).apply()
     }
     private fun readable(error: Throwable) = error.message?.takeIf { it.length < 180 } ?: "连接失败，请检查网络后重试"
-    override fun onCleared() { playback.close(); super.onCleared() }
+    override fun onCleared() {
+        getApplication<Application>().unregisterReceiver(downloadReceiver)
+        playback.close()
+        super.onCleared()
+    }
 }
 
 private object PreviewContent {

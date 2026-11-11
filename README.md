@@ -1,6 +1,6 @@
 # Lilt for Android
 
-使用 Kotlin、Jetpack Compose 和 Media3 开发的原生 QQ 音乐客户端，支持 Android 8.0 及以上版本。界面依据 Pencil 中的 Lilt 设计稿实现，颜色与字号取自设计稿变量，图标使用 Tabler Icons。
+使用 Kotlin、Jetpack Compose 和 Media3 开发的原生 QQ 音乐客户端，支持 Android 12（API 31）及以上版本；最低安装版本为 31，编译与目标 SDK 均为 36。界面沿用 Pencil 中的 Lilt 设计，使用 Radix Colors 的绿色与 Slate 中性色阶，图标使用 Tabler Icons。
 
 ## 已实现
 
@@ -17,8 +17,14 @@
 - 音量均衡：按 QQ 提供的响度（增益 +4 dB 预增益并受峰值限制）调节音量，只衰减不放大；淡入淡出：播放、暂停和切歌时短暂渐变。
 - 在线音频缓存，可设置上限（512 MB 至 8 GB）并清除；下载音质可单独设置。
 - 专辑封面播放页；QQ 云端 QRC 逐字歌词，每个字按自身时长点亮；没有 QRC 时回退到按行同步的 LRC，并匹配翻译。
-- 最近播放、本地音频导入、系统下载管理、深色模式设置。
+- 最近播放、本地音频导入、系统下载管理；下载完成后自动进入「本地与下载」，应用重启和打开本地页时会恢复本应用历史下载，使用本地 content URI 离线读取。
+- 设置中的音质、缓存上限和「外观」使用带选中标记、无投影、细边线分层的锚定下拉菜单；开关支持整行点击。登录入口保留在设置，移除「我的」右上二维码。
+- 清除缓存先显示 MD3 确认弹窗；取消或关闭不清理，确认后清除音频与图片缓存，已下载歌曲保留。
+- 播放／暂停图形形变；触摸反馈使用图标轻微缩放、文字透明度和控件状态变化，不绘制覆盖整行／整块的按压涟漪。底栏固定图标尺寸、文字字重和布局，选中背景保持绿色 RGB，只做 120 ms 透明度过渡，避免与透明黑直接插色产生灰帧；设置选择只反馈右侧值与箭头，开关只反馈拇指与状态。保留键盘焦点与鼠标悬停提示。
+- 播放页顶部跟手下拉，支持短拖回弹、长拖或下甩收起，并保留当前面板直至退出；动效遵循系统动画时长设置。
+- 歌单逐曲显示专辑封面，专辑曲目保留序号列表；播放页歌词与队列入口固定为 56 dp，短屏内容可滚动。
 - 手机底部导航与宽屏导航栏，浅色和深色主题。
+- 首页、搜索、我的分别保留滚动位置（包括首页横向货架）；重复点击当前 Tab 不刷新页面或请求网络。歌单在账号变化、收藏／添加操作成功和手动刷新时同步；已有数据时同步失败保留列表。
 
 直接使用 QQ 音乐接口，不需要另行部署服务端。接口经验来自桌面项目 `../mygo-cloudmusic`。登录凭据使用 Android Keystore 加密，保存在应用的 `noBackupFilesDir`，不写入源码或日志。
 
@@ -39,6 +45,16 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 覆盖安装要求与已安装应用使用同一个调试签名。若环境变量 `ANDROID_SDK_HOME` 指向其他目录，Gradle 会使用那里的 `.android/debug.keystore`，`adb install -r` 会因签名不一致失败；构建前将它指向包含 `.android` 的用户目录即可，不要为此卸载应用。`assembleRelease` 生成经过压缩的未签名 release APK；正式发布前需要配置发布签名。
 
 ## 验证
+
+2026-11-11 底栏真机复测：在用户 Android 16 手机（1200×2670、520 dpi、1.0 倍字体）录制单击、快速切换、重复点击及滚动后切回；逐帧复现并修正原版灰色选中背景、图标缩放变暗与字重跳变，确认修复后背景不发灰、页面返回保留浏览位置。`BottomNavigationExperienceTest` 覆盖过渡中间帧和滚动恢复；与既有导航、播放设置合计 7 项 instrumentation 回归通过。debug／release 构建与 Lint 通过。
+
+2026-11-11 体验优化回归（Android 16 模拟器）：
+
+- 28 项单元测试、Android Lint、debug 和未签名 release 构建通过。
+- 6 项 instrumentation 回归通过：旧下载恢复、新下载元数据持久化、离线 URI 可读、本地页合并展示；播放页按钮尺寸、面板退出状态、短拖回弹／长拖收起、设置下拉与整行开关、既有导航返回。
+- 360×640 dp、1.3 倍字体且系统关闭动画时，3 项播放／设置交互回归通过；检查手机与平板横屏、浅深色外观截图。
+
+下载由系统 DownloadManager 执行；`data/DownloadLibrary.kt` 查询本应用成功的下载并合并入本地曲库，不扫描其他应用的下载。新下载保存封面等来源信息；旧下载从系统的曲名与描述恢复。下载回归使用离线文件注册系统下载记录，不依赖 QQ 账号或网络传输。
 
 2026-11-10 在 Android 16 模拟器完成：
 
@@ -72,7 +88,7 @@ adb shell am instrument -w -r -e authenticated true -e live true com.lilt.app.te
 设计稿中以下部分暂未实现，原因是桌面端没有可复用的接口或安卓端没有对应条件：
 
 - 歌词搜索、收藏歌单（桌面端只有取消收藏）、从这首歌开始电台、评论、锁屏歌词、检查更新。
-- 设计稿使用 Noto Sans SC 和背景模糊玻璃；安卓端使用系统字体，玻璃效果以半透明表面近似，播放页背景模糊需要 Android 12 及以上。
+- 设计稿使用 Noto Sans SC 和背景模糊玻璃；安卓端使用系统字体，玻璃效果以半透明表面近似，播放页使用 Android 12+ 原生背景模糊。
 - 搜索只返回第一页。
 - 音乐内容、地区限制、会员与播放权限由 QQ 音乐接口决定。
 
@@ -83,4 +99,4 @@ adb shell am instrument -w -r -e authenticated true -e live true com.lilt.app.te
 - `ui/`：Compose 页面、组件、底部面板和设计稿主题。
 - `LiltViewModel.kt`：导航、页面状态和业务交互。
 
-项目许可证见 [LICENSE](LICENSE)；Tabler Icons 使用 MIT 许可证，原文保存在 `app/src/main/assets/licenses/tabler-icons.txt`。QRC 解密使用的 DES 表来自 Go 标准库，BSD 许可证原文保存在 `app/src/main/assets/licenses/go-des.txt`。
+项目许可证见 [LICENSE](LICENSE)；Tabler Icons 使用 MIT 许可证，原文保存在 `app/src/main/assets/licenses/tabler-icons.txt`。QRC 解密使用的 DES 表来自 Go 标准库，BSD 许可证原文保存在 `app/src/main/assets/licenses/go-des.txt`。设置中的开源许可包含依赖与组件，并单独致谢 [mygo-qyin](https://github.com/Amamiya23/mygo-qyin) 和 [qq-music-api](https://github.com/Rain120/qq-music-api) 两个参考项目。

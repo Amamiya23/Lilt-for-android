@@ -7,9 +7,13 @@ import android.net.Uri
 import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -20,11 +24,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,12 +53,11 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                IconAction(Glyph.Qr, "扫码登录", onClick = { vm.navigate(Destination.Login) })
                 IconAction(Glyph.Settings, "设置", onClick = { vm.navigate(Destination.Settings) })
             }
         }
         item {
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).quietClickable {
                 vm.navigate(if (profile == null) Destination.Login else Destination.Settings)
             }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.size(74.dp).softShadow(CircleShape).background(MaterialTheme.colorScheme.surface, CircleShape).padding(3.dp)) {
@@ -105,7 +110,7 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
         if (profile == null) item {
             EmptyState("收藏，都在这里", action = "登录", glyph = Glyph.Heart) { vm.navigate(Destination.Login) }
         } else if (state.libraryLoading && state.library.isEmpty()) item { LoadingState() }
-        else if (state.libraryError != null) item {
+        else if (state.libraryError != null && state.library.isEmpty()) item {
             EmptyState("歌单同步失败", state.libraryError, Glyph.Alert, "重试", onAction = vm::refreshLibrary)
         } else if (created.isEmpty()) item { EmptyState("还没有歌单", "在 QQ 音乐中创建后，可在此同步", Glyph.Queue) }
         else items(created, key = { it.id }) { playlist ->
@@ -134,11 +139,11 @@ private fun MembershipLine(membership: Membership?, profile: Profile) {
 private fun LibraryTile(title: String, glyph: Glyph, cover: String, subtitle: String,
                         modifier: Modifier, onPlay: () -> Unit, onClick: () -> Unit) {
     val shape = RoundedCornerShape(22.dp)
-    Column(modifier.softShadow(shape).clip(shape).background(MaterialTheme.colorScheme.surface).clickable(onClick = onClick)
+    Column(modifier.softShadow(shape).clip(shape).background(MaterialTheme.colorScheme.surface).quietClickable(onClick = onClick)
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
             Artwork(cover, Modifier.size(56.dp), 14.dp)
-            Box(Modifier.size(40.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onPlay)
+            Box(Modifier.size(40.dp).clip(CircleShape).quietClickable(role = Role.Button, onClick = onPlay)
                 .semantics { contentDescription = "播放$title" }, contentAlignment = Alignment.Center) {
                 Box(Modifier.size(30.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape), contentAlignment = Alignment.Center) {
                     TransportIcon(Transport.Play, Modifier.size(14.dp), MaterialTheme.colorScheme.onSurface)
@@ -176,7 +181,7 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             Text("设置", style = MaterialTheme.typography.headlineLarge)
         }
         GroupCard(vertical = 0.dp) {
-            Row(Modifier.fillMaxWidth().clickable { vm.navigate(Destination.Login) }.padding(vertical = 16.dp),
+            Row(Modifier.fillMaxWidth().quietClickable { vm.navigate(Destination.Login) }.padding(vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Artwork(profile?.avatar, Modifier.size(48.dp), 24.dp)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -189,60 +194,125 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             }
         }
         SettingsSection("播放") {
-            SettingRow(Glyph.Headphones, "在线播放音质", qualityLabel(state.quality), { choice = "quality" })
+            SettingsChoiceRow(Glyph.Headphones, "在线播放音质", QualityOptions, state.quality, vm::setQuality)
             RowDivider()
-            SettingRow(Glyph.Download, "下载音质", qualityLabel(state.downloadQuality), { choice = "download" })
+            SettingsChoiceRow(Glyph.Download, "下载音质", QualityOptions, state.downloadQuality, vm::setDownloadQuality)
             RowDivider()
-            SettingRow(Glyph.Volume, "音量均衡", onClick = { vm.setNormalize(!state.normalize) }, subtitle = "按响度统一不同歌曲的音量", trailing = {
-                LiltSwitch(state.normalize, vm::setNormalize, "音量均衡")
-            })
+            SettingsToggleRow(Glyph.Volume, "音量均衡", state.normalize, "按响度统一不同歌曲的音量", vm::setNormalize)
             RowDivider()
-            SettingRow(Glyph.Fade, "淡入淡出", onClick = { vm.setFade(!state.fade) }, subtitle = "切歌和暂停时平滑过渡", trailing = {
-                LiltSwitch(state.fade, vm::setFade, "淡入淡出")
-            })
+            SettingsToggleRow(Glyph.Fade, "淡入淡出", state.fade, "切歌和暂停时平滑过渡", vm::setFade)
         }
         SettingsSection("歌词") {
-            SettingRow(Glyph.Lyrics, "逐字歌词", onClick = { vm.setWordLyrics(!state.wordLyrics) }, subtitle = "有 QQ 逐字歌词时，按字点亮", trailing = {
-                LiltSwitch(state.wordLyrics, vm::setWordLyrics, "逐字歌词")
-            })
+            SettingsToggleRow(Glyph.Lyrics, "逐字歌词", state.wordLyrics, "有 QQ 逐字歌词时，按字点亮", vm::setWordLyrics)
         }
         SettingsSection("存储与外观") {
-            SettingRow(Glyph.Storage, "缓存上限", CacheLimits.firstOrNull { it.first == state.cacheLimitMb.toString() }?.second
-                ?: "${state.cacheLimitMb} MB", { choice = "cache" })
+            SettingsChoiceRow(Glyph.Storage, "缓存上限", CacheLimits, state.cacheLimitMb.toString()) { vm.setCacheLimit(it.toLong()) }
             RowDivider()
-            SettingRow(Glyph.Trash, "清除缓存", bytesLabel(state.cacheUsed), {
-                vm.clearCaches { context.imageLoader.memoryCache?.clear(); context.imageLoader.diskCache?.clear() }
-            })
+            SettingRow(Glyph.Trash, "清除缓存", bytesLabel(state.cacheUsed), { choice = "clear-cache" })
             RowDivider()
-            SettingRow(Glyph.Moon, "深色模式", state.theme.label, { choice = "theme" })
+            SettingsChoiceRow(Glyph.Moon, "外观", ThemeMode.entries.map { it.name to it.label }, state.theme.name) {
+                vm.setTheme(ThemeMode.valueOf(it))
+            }
         }
         SettingsSection("关于") {
             SettingRow(Glyph.Info, "关于 Lilt", onClick = { choice = "about" })
             RowDivider()
-            SettingRow(Glyph.External, "开源许可", "Tabler Icons", {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/tabler/tabler-icons")))
-            })
+            SettingRow(Glyph.External, "开源许可", onClick = { choice = "licenses" })
             RowDivider()
             SettingRow(Glyph.Music, "当前版本", "v${BuildConfig.VERSION_NAME}")
         }
         if (profile != null) {
             val shape = RoundedCornerShape(22.dp)
             Box(Modifier.fillMaxWidth().height(52.dp).softShadow(shape).clip(shape).background(MaterialTheme.colorScheme.surface)
-                .clickable(role = Role.Button, onClick = vm::logout), contentAlignment = Alignment.Center) {
+                .quietClickable(role = Role.Button, onClick = vm::logout), contentAlignment = Alignment.Center) {
                 Text("退出登录", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
             }
         }
     }
     when (choice) {
-        "quality" -> ChoiceSheet("在线播放音质", QualityOptions, state.quality, { choice = null }) { vm.setQuality(it); choice = null }
-        "download" -> ChoiceSheet("下载音质", QualityOptions, state.downloadQuality, { choice = null }) { vm.setDownloadQuality(it); choice = null }
-        "cache" -> ChoiceSheet("缓存上限", CacheLimits, state.cacheLimitMb.toString(), { choice = null }) { vm.setCacheLimit(it.toLong()); choice = null }
-        "theme" -> ChoiceSheet("深色模式", ThemeMode.entries.map { it.name to it.label }, state.theme.name, { choice = null }) {
-            vm.setTheme(ThemeMode.valueOf(it)); choice = null
-        }
+        "clear-cache" -> AlertDialog(
+            onDismissRequest = { choice = null },
+            icon = { AppIcon(Glyph.Trash) },
+            title = { Text("清除缓存？") },
+            text = { Text("清除音频与图片缓存，保留已下载歌曲。") },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 0.dp,
+            dismissButton = { QuietTextButton({ choice = null }) { Text("取消") } },
+            confirmButton = {
+                QuietTextButton({
+                    choice = null
+                    vm.clearCaches { context.imageLoader.memoryCache?.clear(); context.imageLoader.diskCache?.clear() }
+                }) { Text("清除") }
+            })
+        "licenses" -> OpenSourceSheet(onDismiss = { choice = null }, onOpenError = { vm.notify("无法打开链接") })
         "about" -> AlertDialog(onDismissRequest = { choice = null }, title = { Text("Lilt") },
             text = { Text("安静地，听音乐。\n\n基于 Kotlin 与 Jetpack Compose 开发的第三方 QQ 音乐客户端。音乐内容与收听权限由 QQ 音乐提供，版权归各权利人所有。") },
-            confirmButton = { TextButton({ choice = null }) { Text("知道了") } })
+            confirmButton = { QuietTextButton({ choice = null }) { Text("知道了") } })
+    }
+}
+
+/** Keep the menu anchored to its value, so the row remains visible while choosing. */
+@Composable
+private fun SettingsChoiceRow(glyph: Glyph, label: String, options: List<Pair<String, String>>,
+                              selected: String, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val value = options.firstOrNull { it.first == selected }?.second.orEmpty()
+    val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(160), label = "settingsMenuArrow")
+    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+        .quietClickable(role = Role.Button, interactionSource = interaction, pressedAlpha = 1f) { expanded = !expanded }
+        .semantics { stateDescription = value }
+        .padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        AppIcon(glyph, Modifier.size(21.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        Box {
+            Row(Modifier.pressFeedback(interaction, 1f, .64f), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(value, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AppIcon(Glyph.Down, Modifier.size(18.dp).graphicsLayer { rotationZ = arrowRotation }, MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            DropdownMenu(expanded, onDismissRequest = { expanded = false },
+                modifier = Modifier.widthIn(min = 216.dp, max = 280.dp), shape = RoundedCornerShape(24.dp),
+                containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, shadowElevation = 0.dp,
+                border = BorderStroke(1.dp, MaterialTheme.lilt.divider)) {
+                options.forEach { (key, text) ->
+                    val optionInteraction = remember { MutableInteractionSource() }
+                    CompositionLocalProvider(LocalRippleConfiguration provides QuietRippleConfiguration) {
+                    DropdownMenuItem(text = { Text(text, fontWeight = if (key == selected) FontWeight.SemiBold else FontWeight.Normal) },
+                        onClick = { expanded = false; if (key != selected) onSelect(key) },
+                        modifier = Modifier.heightIn(min = 56.dp)
+                            .pressFeedback(optionInteraction, 1f, .64f).semantics { this.selected = key == selected },
+                        interactionSource = optionInteraction,
+                        trailingIcon = {
+                            Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                if (key == selected) AppIcon(Glyph.Check, Modifier.size(22.dp), MaterialTheme.colorScheme.onSurface)
+                            }
+                        }, contentPadding = PaddingValues(horizontal = 24.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One switch target for the entire row, including the visible thumb. */
+@Composable
+private fun SettingsToggleRow(glyph: Glyph, label: String, checked: Boolean, subtitle: String,
+                              onChange: (Boolean) -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).quietIndication(interaction)
+        .toggleable(checked, interactionSource = interaction, indication = null,
+            role = Role.Switch, onValueChange = onChange)
+        .padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        AppIcon(glyph, Modifier.size(21.dp))
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.width(12.dp))
+        LiltSwitch(checked, null, label, interactionSource = interaction)
     }
 }
 
@@ -288,7 +358,7 @@ fun LoginScreen(state: AppState, vm: LiltViewModel) {
                     val selected = state.provider == provider
                     Box(Modifier.weight(1f).fillMaxHeight()
                         .then(if (selected) Modifier.shadow(2.dp, RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(18.dp)) else Modifier)
-                        .clip(RoundedCornerShape(18.dp)).clickable(role = Role.Tab) { if (!selected) vm.refreshQr(provider) }
+                        .clip(RoundedCornerShape(18.dp)).quietClickable(role = Role.Tab) { if (!selected) vm.refreshQr(provider) }
                         .semantics { this.selected = selected }, contentAlignment = Alignment.Center) {
                         Text(label, fontSize = 14.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -307,14 +377,14 @@ fun LoginScreen(state: AppState, vm: LiltViewModel) {
                             coil.compose.AsyncImage(state.qr.imageBytes, if (wechat) "微信登录二维码" else "QQ 登录二维码",
                                 Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
                             if (state.qrState == LoginState.EXPIRED) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = .9f))
-                                .clickable { vm.refreshQr() }, contentAlignment = Alignment.Center) {
-                                Text("点按刷新", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF16181C))
+                                .quietClickable { vm.refreshQr() }, contentAlignment = Alignment.Center) {
+                                Text("点按刷新", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Radix.Slate12)
                             } else Box(Modifier.size(32.dp).background(Color.White, RoundedCornerShape(9.dp)).padding(3.dp)
                                 .background(primary, RoundedCornerShape(7.dp)), contentAlignment = Alignment.Center) {
                                 AppIcon(Glyph.Music, Modifier.size(16.dp), Color.White)
                             }
                         }
-                        else -> AppIcon(Glyph.Qr, Modifier.size(64.dp), Radix.Gray8)
+                        else -> AppIcon(Glyph.Qr, Modifier.size(64.dp), Radix.Slate11)
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -324,7 +394,7 @@ fun LoginScreen(state: AppState, vm: LiltViewModel) {
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     SoftPill("刷新二维码", Glyph.Refresh, horizontal = 16.dp, vertical = 8.dp, fontSize = 13, enabled = !state.qrBusy) { vm.refreshQr() }
-                    if (state.qr?.imageBytes != null) Text("保存", Modifier.clip(CircleShape).clickable {
+                    if (state.qr?.imageBytes != null) Text("保存", Modifier.clip(CircleShape).quietClickable {
                         if (wechat) saveJpeg.launch("Lilt-微信登录.jpg") else savePng.launch("Lilt-QQ登录.png")
                     }.padding(horizontal = 12.dp, vertical = 8.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

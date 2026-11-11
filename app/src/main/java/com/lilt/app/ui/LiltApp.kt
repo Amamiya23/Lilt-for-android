@@ -2,16 +2,13 @@
 
 package com.lilt.app.ui
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -19,18 +16,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lilt.app.*
 import com.lilt.app.data.*
@@ -60,14 +58,9 @@ fun LiltApp(vm: LiltViewModel) {
     val player by vm.player.collectAsStateWithLifecycle()
     val profile by vm.profile.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val tabStates = rememberSaveableStateHolder()
     var menu by remember { mutableStateOf<SongMenu?>(null) }
-    var pendingDownload by remember { mutableStateOf<Song?>(null) }
     val context = LocalContext.current
-    val downloadPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) pendingDownload?.let(vm::download)
-        else vm.notify("需要存储权限才能保存到设备音乐目录")
-        pendingDownload = null
-    }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
     // The search keyboard must not stay over the player.
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
@@ -87,10 +80,14 @@ fun LiltApp(vm: LiltViewModel) {
                             AppIcon(Glyph.Music, Modifier.padding(vertical = 24.dp).size(28.dp), MaterialTheme.colorScheme.primary)
                         }) {
                         Tabs.forEach { (destination, glyph, title) ->
+                            val source = remember { MutableInteractionSource() }
+                            CompositionLocalProvider(LocalRippleConfiguration provides QuietRippleConfiguration) {
                             NavigationRailItem(state.topLevel == destination, { vm.navigate(destination) },
-                                icon = { AppIcon(glyph) }, label = { Text(title) },
+                                interactionSource = source,
+                                icon = { AppIcon(glyph, Modifier.pressFeedback(source, .9f, .7f)) }, label = { Text(title) },
                                 colors = NavigationRailItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                                     selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary))
+                            }
                         }
                     }
                 }
@@ -99,7 +96,7 @@ fun LiltApp(vm: LiltViewModel) {
                         else if (showMini) 168.dp else 100.dp
                     CompositionLocalProvider(LocalTopInset provides topInset) {
                         Box(Modifier.widthIn(max = if (expanded) 880.dp else 700.dp).fillMaxSize().align(Alignment.TopCenter)) {
-                            when (state.destination) {
+                            val page: @Composable () -> Unit = { when (state.destination) {
                                 Destination.Home -> HomeScreen(state, profile, vm, bottomPadding, onMore)
                                 Destination.Search -> SearchScreen(state, vm, bottomPadding, onMore)
                                 Destination.Library -> LibraryScreen(state, profile, vm, bottomPadding)
@@ -109,7 +106,10 @@ fun LiltApp(vm: LiltViewModel) {
                                 Destination.Playlists -> PlaylistCollectionScreen(state, vm, bottomPadding)
                                 Destination.Albums -> AlbumCollectionScreen(state, vm, bottomPadding)
                                 Destination.Local -> LocalScreen(state, vm, bottomPadding, onMore)
-                            }
+                            } }
+                            if (state.destination == Destination.Home || state.destination == Destination.Search || state.destination == Destination.Library) {
+                                tabStates.SaveableStateProvider(state.destination.name) { page() }
+                            } else page()
                         }
                     }
                     // Pages scroll under the status bar; the design covers it with glass.
@@ -125,10 +125,7 @@ fun LiltApp(vm: LiltViewModel) {
                     }
                 }
             }
-            AnimatedVisibility(state.playerOpen, enter = slideInVertically(tween(330)) { it / 3 } + fadeIn(tween(260)),
-                exit = slideOutVertically(tween(260)) { it / 3 } + fadeOut(tween(230))) {
-                PlayerScreen(state, player, vm, onMore)
-            }
+            PlayerOverlay(state, player, vm, onMore)
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
                 .padding(bottom = if (state.playerOpen || standalone) 16.dp else 88.dp, start = 16.dp, end = 16.dp))
         }
@@ -147,11 +144,7 @@ fun LiltApp(vm: LiltViewModel) {
                 },
                 onDownload = {
                     menu = null
-                    if (Build.VERSION.SDK_INT <= 28 &&
-                        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                        pendingDownload = song
-                        downloadPermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                    } else vm.download(song)
+                    vm.download(song)
                 },
                 onShare = {
                     menu = null
@@ -201,23 +194,28 @@ private fun sleepLabel(at: Long): String {
 @Composable
 private fun BottomNavigation(destination: Destination, onNavigate: (Destination) -> Unit) {
     val edge = MaterialTheme.lilt.glassEdge
-    Box(Modifier.fillMaxWidth().background(MaterialTheme.lilt.glass.copy(alpha = .985f)).drawBehind {
+    Box(Modifier.fillMaxWidth().testTag("bottom-navigation").background(MaterialTheme.lilt.glass).drawBehind {
         drawLine(edge, androidx.compose.ui.geometry.Offset(0f, 0f), androidx.compose.ui.geometry.Offset(size.width, 0f), 1.dp.toPx())
     }) {
         Row(Modifier.fillMaxWidth().selectableGroup().navigationBarsPadding().padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
             horizontalArrangement = Arrangement.SpaceAround) {
             Tabs.forEach { (tab, icon, title) ->
                 val selected = destination == tab
-                Column(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
-                    .selectable(selected, role = Role.Tab, onClick = { onNavigate(tab) })
+                val source = remember { MutableInteractionSource() }
+                // Keep the indicator's RGB fixed: fading toward transparent black produces a grey intermediate frame.
+                val indicatorAlpha by animateFloatAsState(if (selected) 1f else 0f,
+                    animationSpec = tween(120), label = "navigationIndicatorAlpha")
+                val tint by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    animationSpec = tween(120), label = "navigationTint")
+                Column(Modifier.weight(1f).heightIn(min = 56.dp).clip(RoundedCornerShape(12.dp)).quietIndication(source)
+                    .selectable(selected, interactionSource = source, indication = null, role = Role.Tab, onClick = { onNavigate(tab) })
                     .padding(vertical = 2.dp), horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Box(Modifier.size(56.dp, 30.dp).background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape),
+                    verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically)) {
+                    Box(Modifier.size(56.dp, 30.dp).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = indicatorAlpha), CircleShape),
                         contentAlignment = Alignment.Center) {
-                        AppIcon(icon, tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        AppIcon(icon, tint = tint)
                     }
-                    Text(title, fontSize = 11.sp, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                    Text(title, fontSize = 12.sp, lineHeight = 16.sp, color = tint, fontWeight = FontWeight.Medium)
                 }
             }
         }
@@ -232,7 +230,7 @@ private fun MiniPlayer(player: PlaybackSnapshot, previewSong: Song?, preview: Bo
     Box(modifier.fillMaxWidth().height(60.dp)
         .shadow(18.dp, shape, ambientColor = shadow.copy(alpha = .10f), spotColor = shadow.copy(alpha = .14f))
         .clip(shape).background(MaterialTheme.lilt.glass.copy(alpha = .985f)).border(1.dp, MaterialTheme.lilt.glassEdge, shape)) {
-        Row(Modifier.fillMaxSize().clickable(onClick = onOpen).padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxSize().quietClickable(onClick = onOpen).padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Artwork(player.current?.artwork ?: previewSong?.cover, Modifier.size(44.dp), 12.dp)
             Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 Text(player.current?.title ?: previewSong?.title.orEmpty(), fontSize = 14.sp, fontWeight = FontWeight.SemiBold,

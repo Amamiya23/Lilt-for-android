@@ -28,7 +28,7 @@ data class SheetColors(val container: Color, val content: Color, val secondary: 
 
 @Composable
 fun sheetColors(dark: Boolean): SheetColors = if (dark) SheetColors(
-    container = Color(0xFF2B2427), content = Color.White, secondary = Color.White.copy(alpha = .6f),
+    container = com.lilt.app.ui.theme.Radix.SlateDark3, content = Color.White, secondary = Color.White.copy(alpha = .6f),
     tile = Color.White.copy(alpha = .07f), divider = Color.White.copy(alpha = .07f), chevron = Color.White.copy(alpha = .35f),
     handle = Color.White.copy(alpha = .3f), scrim = Color.Black.copy(alpha = .42f),
 ) else SheetColors(
@@ -60,7 +60,7 @@ fun SheetGroup(colors: SheetColors, content: @Composable ColumnScope.() -> Unit)
 @Composable
 fun SheetRow(colors: SheetColors, glyph: Glyph, label: String, value: String? = null, divider: Boolean = false, onClick: () -> Unit) {
     Column {
-        Row(Modifier.fillMaxWidth().heightIn(min = 50.dp).clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 50.dp).quietClickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
             AppIcon(glyph, Modifier.size(21.dp), colors.content.copy(alpha = .8f))
             Spacer(Modifier.width(14.dp))
             Text(label, Modifier.weight(1f), fontSize = 15.sp, color = colors.content)
@@ -97,7 +97,7 @@ fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: Str
                 if (online) Triple(Glyph.Download, "下载", onDownload) else null,
                 Triple(Glyph.Share, "分享", onShare),
             ).forEach { (glyph, label, action) ->
-                Column(Modifier.weight(1f).height(76.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile).clickable(onClick = action),
+                Column(Modifier.weight(1f).height(76.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile).quietClickable(onClick = action),
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     AppIcon(glyph, Modifier.size(22.dp), colors.content)
                     Spacer(Modifier.height(8.dp))
@@ -130,7 +130,7 @@ fun ArtistPickerSheet(song: Song, dark: Boolean, onDismiss: () -> Unit, onBack: 
         }
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(colors.tile).padding(horizontal = 16.dp, vertical = 4.dp)) {
             song.artists.forEachIndexed { index, artist ->
-                Row(Modifier.fillMaxWidth().height(64.dp).clickable { onArtist(artist) }, verticalAlignment = Alignment.CenterVertically,
+                Row(Modifier.fillMaxWidth().height(64.dp).quietClickable { onArtist(artist) }, verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Artwork(artist.cover, Modifier.size(44.dp), 22.dp)
                     Text(artist.name, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1,
@@ -152,7 +152,7 @@ fun PlaylistPickerSheet(playlists: List<Playlist>, dark: Boolean, onDismiss: () 
         else Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile)
             .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
             playlists.forEachIndexed { index, playlist ->
-                Row(Modifier.fillMaxWidth().height(64.dp).clickable { onPick(playlist) }, verticalAlignment = Alignment.CenterVertically,
+                Row(Modifier.fillMaxWidth().height(64.dp).quietClickable { onPick(playlist) }, verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Artwork(playlist.cover, Modifier.size(44.dp), 10.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -173,7 +173,7 @@ fun ChoiceSheet(title: String, options: List<Pair<String, String>>, selected: St
         Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp))
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(colors.tile).padding(horizontal = 16.dp, vertical = 2.dp)) {
             options.forEachIndexed { index, (id, label) ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable { onSelect(id) }, verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).quietClickable { onSelect(id) }, verticalAlignment = Alignment.CenterVertically) {
                     Text(label, Modifier.weight(1f), fontSize = 15.sp)
                     if (selected == id) AppIcon(Glyph.Check, Modifier.size(20.dp),
                         if (dark) Color.White else MaterialTheme.colorScheme.primary)

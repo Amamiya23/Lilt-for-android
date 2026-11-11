@@ -8,6 +8,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +28,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -52,7 +57,8 @@ private val Soft = Color.White.copy(alpha = .65f)
 private val Disc = Color.White.copy(alpha = .15f)
 
 @Composable
-fun PlayerScreen(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, onMore: (Song) -> Unit) {
+fun PlayerScreen(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, onMore: (Song) -> Unit,
+                 modifier: Modifier = Modifier, onDrag: (Float) -> Unit = {}, onDragStopped: (Float) -> Unit = {}) {
     val song = vm.currentSong()
     val title = player.current?.title ?: song?.title ?: "还没有播放音乐"
     val artist = player.current?.artist ?: song?.artist.orEmpty()
@@ -61,39 +67,43 @@ fun PlayerScreen(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, o
     var showQuality by remember { mutableStateOf(false) }
     val tint by animateFloatAsState(when (state.playerPanel) { PlayerPanel.Artwork -> 0f; PlayerPanel.Lyrics -> .5f; PlayerPanel.Queue -> 1f },
         label = "playerTint")
-    Box(Modifier.fillMaxSize().background(Radix.PlayerBase)) {
-        // The cover itself, blurred, is the backdrop; Android 11 and earlier cannot blur, so it is dimmed instead.
-        if (cover.isNotBlank()) coil.compose.AsyncImage(cover, null, Modifier.fillMaxSize().blur(90.dp)
-            .alpha(if (android.os.Build.VERSION.SDK_INT >= 31) 1f else .35f),
+    Box(modifier.fillMaxSize().background(Radix.PlayerBase)) {
+        // Android 12+ can render the blurred cover directly as the backdrop.
+        if (cover.isNotBlank()) coil.compose.AsyncImage(cover, null, Modifier.fillMaxSize().blur(90.dp),
             contentScale = androidx.compose.ui.layout.ContentScale.Crop)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
             Radix.PlayerTint.copy(alpha = .25f + .2f * tint), Radix.PlayerShade.copy(alpha = .6f + .1f * tint)))))
         CompositionLocalProvider(LocalContentColor provides Color.White) {
             BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 val wide = maxWidth > maxHeight
-                val contentHeight = maxHeight
-                val contentWidth = maxWidth
                 Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
-                    Grabber { vm.showPlayer(false) }
+                    Grabber(onDrag, onDragStopped) { vm.showPlayer(false) }
+                    // Reserve the footer before measuring artwork; short displays can scroll the content.
+                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    val bodyHeight = maxHeight
+                    val bodyWidth = maxWidth
                     if (wide) WidePlayerContent(state, player, vm, title, artist, album, cover, song, onMore,
-                        Modifier.fillMaxWidth().weight(1f)) { showQuality = true }
-                    else when (state.playerPanel) {
+                        Modifier.fillMaxSize()) { showQuality = true }
+                    else Column(Modifier.fillMaxSize()) { when (state.playerPanel) {
                         PlayerPanel.Artwork -> {
-                            // 38 grabber, 52 below the cover, 60 meta, 73 progress, 138 controls, 48 actions.
-                            val fixed = 38f + 52f + 60f + 73f + 138f + 48f
-                            val art = min(contentWidth.value - 48f, contentHeight.value - fixed - 24f).coerceAtLeast(140f)
-                            val gap = ((contentHeight.value - fixed - art) * .6f).coerceIn(12f, 60f)
-                            Spacer(Modifier.height(gap.dp))
+                            val compact = bodyHeight < 600.dp
+                            val fontScale = androidx.compose.ui.platform.LocalDensity.current.fontScale.coerceAtLeast(1f)
+                            val fixedHeight = (if (compact) 396f else 436f) + (fontScale - 1f) * 100f
+                            val art = min(bodyWidth.value, bodyHeight.value - fixedHeight).coerceAtLeast(140f)
+                            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.Center) {
+                            Spacer(Modifier.height(if (compact) 8.dp else 20.dp))
                             Artwork(cover, Modifier.align(Alignment.CenterHorizontally).size(art.dp)
                                 .shadow(24.dp, RoundedCornerShape(14.dp), ambientColor = Color.Black.copy(alpha = .35f),
                                     spotColor = Color.Black.copy(alpha = .35f)), 14.dp, "$title · 专辑封面")
-                            Spacer(Modifier.height(52.dp))
+                            Spacer(Modifier.height(if (compact) 24.dp else 36.dp))
                             TrackHeading(title, listOf(artist, album).filter { it.isNotBlank() }.joinToString(" — "),
                                 song?.mid in state.liked, state.likeBusy, { vm.toggleLike() }, { song?.let(onMore) })
-                            PlayerProgress(player, state.preview, vm.playback::seekTo, Modifier.padding(top = 34.dp),
+                            PlayerProgress(player, state.preview, vm.playback::seekTo, Modifier.padding(top = if (compact) 16.dp else 24.dp),
                                 qualityChip(state.quality)) { showQuality = true }
-                            TransportControls(player, vm, prevNext = 40.dp, pause = 54.dp, Modifier.padding(top = 40.dp, bottom = 44.dp))
-                            Spacer(Modifier.weight(1f))
+                            TransportControls(player, vm, prevNext = 40.dp, pause = 54.dp,
+                                Modifier.padding(top = if (compact) 20.dp else 28.dp, bottom = 20.dp))
+                            }
                         }
                         PlayerPanel.Lyrics -> {
                             CompactHeading(title, artist, cover, song?.mid in state.liked, { vm.toggleLike() }, { song?.let(onMore) })
@@ -108,8 +118,9 @@ fun PlayerScreen(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, o
                             QueueContent(player, vm, Modifier.weight(1f))
                             TransportControls(player, vm, prevNext = 34.dp, pause = 44.dp, Modifier.padding(vertical = 6.dp))
                         }
+                    } }
                     }
-                    PanelActions(state, vm, Modifier.padding(bottom = if (wide) 4.dp else 20.dp))
+                    PanelActions(state, vm, Modifier.height(if (wide) 56.dp else 72.dp))
                 }
             }
         }
@@ -123,13 +134,11 @@ val QualityOptions = listOf("standard" to "标准", "hq" to "高品质 HQ", "los
 private fun qualityChip(quality: String) = when (quality) { "hq" -> "HQ"; "lossless" -> "SQ"; else -> "标准" }
 
 @Composable
-private fun Grabber(onClose: () -> Unit) {
-    Box(Modifier.fillMaxWidth().height(38.dp).pointerInput(Unit) {
-        var drag = 0f
-        detectVerticalDragGestures(onDragStart = { drag = 0f }, onVerticalDrag = { _, amount -> drag += amount },
-            onDragEnd = { if (drag > 50) onClose() })
-    }, contentAlignment = Alignment.Center) {
-        Box(Modifier.size(80.dp, 38.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClose)
+private fun Grabber(onDrag: (Float) -> Unit, onDragStopped: (Float) -> Unit, onClose: () -> Unit) {
+    Box(Modifier.fillMaxWidth().height(48.dp)
+        .draggable(rememberDraggableState(onDrag), Orientation.Vertical, onDragStopped = { onDragStopped(it) }),
+        contentAlignment = Alignment.Center) {
+        Box(Modifier.size(80.dp, 48.dp).clip(RoundedCornerShape(12.dp)).quietClickable(onClick = onClose)
             .semantics { contentDescription = "收起播放页" }, contentAlignment = Alignment.Center) {
             Box(Modifier.size(40.dp, 5.dp).background(Color.White.copy(alpha = .35f), CircleShape))
         }
@@ -240,12 +249,15 @@ private fun PlayerProgress(player: PlaybackSnapshot, preview: Boolean, onSeek: (
             val shown = if (seeking) (seek * duration).toLong() else position
             Text(formatTime(shown), Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.Medium,
                 color = Color.White.copy(alpha = .6f))
-            if (quality != null) Row(Modifier.clip(RoundedCornerShape(5.dp)).background(Color.White.copy(alpha = .12f))
-                .clickable(onClick = onQuality).semantics { contentDescription = "在线播放音质：$quality" }
-                .padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically,
+            if (quality != null) Box(Modifier.sizeIn(minWidth = 56.dp, minHeight = 48.dp).clip(RoundedCornerShape(8.dp))
+                .quietClickable(onClick = onQuality).semantics { contentDescription = "在线播放音质：$quality" },
+                contentAlignment = Alignment.Center) {
+                Row(Modifier.background(Color.White.copy(alpha = .12f), RoundedCornerShape(5.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 AppIcon(Glyph.Adjust, Modifier.size(12.dp), Color.White.copy(alpha = .8f))
                 Text(quality, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = .5.sp, color = Color.White.copy(alpha = .8f))
+                }
             }
             Text("-${formatTime(duration - shown)}", Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.Medium,
                 color = Color.White.copy(alpha = .6f), textAlign = TextAlign.End)
@@ -269,7 +281,7 @@ private fun TransportControls(player: PlaybackSnapshot, vm: LiltViewModel, prevN
         }
         if (player.error != null) Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(player.error, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = .85f))
-            TextButton({ vm.playback.clearError(); vm.playback.toggle() },
+            QuietTextButton({ vm.playback.clearError(); vm.playback.toggle() },
                 colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("重试") }
         }
     }
@@ -277,18 +289,20 @@ private fun TransportControls(player: PlaybackSnapshot, vm: LiltViewModel, prevN
 
 @Composable
 private fun PanelActions(state: AppState, vm: LiltViewModel, modifier: Modifier) {
-    Row(modifier.fillMaxWidth().padding(horizontal = 32.dp), horizontalArrangement = Arrangement.SpaceBetween,
+    Row(modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically) {
         listOf(Triple(PlayerPanel.Lyrics, Glyph.Lyrics, "同步歌词"), Triple(PlayerPanel.Queue, Glyph.Queue, "播放队列"))
             .forEach { (panel, glyph, label) ->
                 val active = state.playerPanel == panel
-                Box(Modifier.size(48.dp).clip(CircleShape)
-                    .clickable { vm.setPlayerPanel(if (active) PlayerPanel.Artwork else panel) }
-                    .semantics { selected = active; contentDescription = label }, contentAlignment = Alignment.Center) {
-                    Box(Modifier.size(40.dp).background(if (active) Color.White.copy(alpha = .2f) else Color.Transparent, CircleShape),
-                        contentAlignment = Alignment.Center) {
-                        AppIcon(glyph, Modifier.size(if (active) 22.dp else 24.dp), Color.White.copy(alpha = if (active) 1f else .7f))
+                val source = remember { MutableInteractionSource() }
+                val fill by animateColorAsState(if (active) Color.White.copy(alpha = .2f) else Color.White.copy(alpha = .08f), label = "panelFill")
+                Box(Modifier.requiredSize(56.dp).pressFeedback(source).clip(RoundedCornerShape(18.dp))
+                    .background(fill)
+                    .quietClickable(interactionSource = source, role = Role.Button) {
+                        vm.setPlayerPanel(if (active) PlayerPanel.Artwork else panel)
                     }
+                    .semantics { selected = active; contentDescription = label }, contentAlignment = Alignment.Center) {
+                    AppIcon(glyph, Modifier.size(28.dp), Color.White.copy(alpha = if (active) 1f else .85f))
                 }
             }
     }
@@ -332,7 +346,7 @@ private fun LyricsContent(state: AppState, player: PlaybackSnapshot, vm: LiltVie
             }
             state.lyricsError != null -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("歌词加载失败", style = MaterialTheme.typography.titleMedium, color = Soft)
-                TextButton({ vm.loadLyrics() }, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("重试") }
+                QuietTextButton({ vm.loadLyrics() }, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("重试") }
             }
             lines.isEmpty() -> Text("暂无歌词，静静听", Modifier.align(Alignment.Center),
                 style = MaterialTheme.typography.titleMedium, color = Soft)
@@ -341,7 +355,7 @@ private fun LyricsContent(state: AppState, player: PlaybackSnapshot, vm: LiltVie
                 itemsIndexed(lines, key = { index, line -> "$index-${line.timeMs}" }) { index, line ->
                     val (alpha, blur) = lineLook(index - activeIndex)
                     val shown by animateFloatAsState(alpha, label = "lyricAlpha")
-                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { vm.playback.seekTo(line.timeMs) }
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).quietClickable { vm.playback.seekTo(line.timeMs) }
                         .then(if (blur > 0f) Modifier.blur(blur.dp, BlurredEdgeTreatment.Unbounded) else Modifier)
                         .padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (index == activeIndex && line.words.isNotEmpty()) SungLine(line, position)
@@ -380,7 +394,7 @@ private fun QueueModes(state: AppState, player: PlaybackSnapshot, vm: LiltViewMo
             Mode(Glyph.Endless, "播完继续播放私人电台", state.endless, if (state.endless) "已开启" else "已关闭") { vm.setEndless(!state.endless) },
         ).forEach { mode ->
             val fill by animateColorAsState(Color.White.copy(alpha = if (mode.on) .85f else .12f), label = "modeFill")
-            Box(Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = mode.action)
+            Box(Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(12.dp)).quietClickable(onClick = mode.action)
                 .semantics { contentDescription = mode.label; stateDescription = mode.status }, contentAlignment = Alignment.Center) {
                 Box(Modifier.fillMaxWidth().height(38.dp).background(fill, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
                     AppIcon(mode.glyph, Modifier.size(20.dp), if (mode.on) Radix.PlayerTint else Color.White)
@@ -399,7 +413,7 @@ private fun QueueHeader(state: AppState, player: PlaybackSnapshot, vm: LiltViewM
             Text(state.queueSource.ifBlank { "$upcoming 首歌曲" }, fontSize = 13.sp, color = Color.White.copy(alpha = .55f),
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text("清除", Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = vm.playback::clearUpcoming)
+        Text("清除", Modifier.clip(RoundedCornerShape(8.dp)).quietClickable(onClick = vm.playback::clearUpcoming)
             .padding(horizontal = 8.dp, vertical = 10.dp), fontSize = 14.sp, fontWeight = FontWeight.Medium,
             color = Color.White.copy(alpha = .7f))
     }
@@ -433,7 +447,7 @@ private fun QueueContent(player: PlaybackSnapshot, vm: LiltViewModel, modifier: 
             }, modifier = Modifier.zIndex(if (dragging == index) 1f else 0f).graphicsLayer {
                 translationY = if (dragging == index) offset else 0f
             }) {
-                Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(10.dp)).clickable { vm.playback.playAt(queueIndex) },
+                Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(10.dp)).quietClickable { vm.playback.playAt(queueIndex) },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Artwork(track.artwork, Modifier.size(44.dp), 6.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {

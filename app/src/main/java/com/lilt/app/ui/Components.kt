@@ -1,12 +1,21 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.lilt.app.ui
 
 import androidx.annotation.DrawableRes
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.material.ripple.RippleAlpha
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -15,6 +24,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -30,6 +40,52 @@ import coil.compose.AsyncImage
 import com.lilt.app.R
 import com.lilt.app.data.Song
 import com.lilt.app.ui.theme.lilt
+import kotlinx.coroutines.flow.filterNot
+
+/** Share the source with the clickable so visual feedback follows press, release and cancellation. */
+@Composable
+fun Modifier.pressFeedback(source: MutableInteractionSource, pressedScale: Float = .94f, pressedAlpha: Float = 1f): Modifier {
+    val pressed by source.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) pressedScale else 1f,
+        animationSpec = tween(if (pressed) 90 else 180), label = "pressFeedback")
+    val opacity by animateFloatAsState(if (pressed) pressedAlpha else 1f,
+        animationSpec = tween(if (pressed) 90 else 180), label = "pressOpacity")
+    return graphicsLayer { scaleX = scale; scaleY = scale; alpha = opacity }
+}
+
+/** Keep keyboard focus and mouse hover visible, without a touch ripple covering the hit area. */
+@Composable
+fun Modifier.quietIndication(source: InteractionSource): Modifier {
+    val focusAndHover = remember(source) {
+        object : InteractionSource {
+            override val interactions = source.interactions.filterNot { it is PressInteraction }
+        }
+    }
+    return indication(focusAndHover, LocalIndication.current)
+}
+
+@Composable
+fun Modifier.quietClickable(enabled: Boolean = true, role: Role? = null, onClickLabel: String? = null,
+                            interactionSource: MutableInteractionSource? = null, pressedAlpha: Float = .76f,
+                            onClick: () -> Unit): Modifier {
+    val source = interactionSource ?: remember { MutableInteractionSource() }
+    return quietIndication(source).pressFeedback(source, pressedScale = 1f, pressedAlpha = pressedAlpha)
+        .clickable(interactionSource = source, indication = null, enabled = enabled,
+            role = role, onClickLabel = onClickLabel, onClick = onClick)
+}
+
+val QuietRippleConfiguration = RippleConfiguration(rippleAlpha = RippleAlpha(
+    draggedAlpha = .16f, focusedAlpha = .12f, hoveredAlpha = .08f, pressedAlpha = 0f))
+
+@Composable
+fun QuietTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true,
+                    colors: ButtonColors = ButtonDefaults.textButtonColors(), content: @Composable RowScope.() -> Unit) {
+    val source = remember { MutableInteractionSource() }
+    CompositionLocalProvider(LocalRippleConfiguration provides QuietRippleConfiguration) {
+        TextButton(onClick, modifier.pressFeedback(source, 1f, .64f),
+            enabled = enabled, colors = colors, interactionSource = source, content = content)
+    }
+}
 
 enum class Glyph(@param:DrawableRes val res: Int) {
     Home(R.drawable.ic_home), Search(R.drawable.ic_search), User(R.drawable.ic_user),
@@ -58,7 +114,9 @@ fun AppIcon(glyph: Glyph, modifier: Modifier = Modifier, tint: Color = LocalCont
 @Composable
 fun IconAction(glyph: Glyph, description: String, modifier: Modifier = Modifier,
                tint: Color = LocalContentColor.current, enabled: Boolean = true, iconSize: Dp = 22.dp, onClick: () -> Unit) {
-    IconButton(onClick, modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp), enabled = enabled) {
+    val source = remember { MutableInteractionSource() }
+    Box(modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).pressFeedback(source)
+        .quietClickable(enabled = enabled, role = Role.Button, interactionSource = source, onClick = onClick), contentAlignment = Alignment.Center) {
         AppIcon(glyph, Modifier.size(iconSize), if (enabled) tint else tint.copy(alpha = .38f), description)
     }
 }
@@ -68,8 +126,9 @@ fun IconAction(glyph: Glyph, description: String, modifier: Modifier = Modifier,
 fun CircleAction(glyph: Glyph, description: String, fill: Color, modifier: Modifier = Modifier, size: Dp = 40.dp,
                  iconSize: Dp = 20.dp, tint: Color = LocalContentColor.current, shadow: Boolean = false,
                  enabled: Boolean = true, onClick: () -> Unit) {
-    Box(modifier.size(maxOf(size, 48.dp)).clip(CircleShape)
-        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+    val source = remember { MutableInteractionSource() }
+    Box(modifier.size(maxOf(size, 48.dp)).pressFeedback(source).clip(CircleShape)
+        .quietClickable(interactionSource = source, enabled = enabled, role = Role.Button, onClick = onClick)
         .semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         Box(Modifier.size(size).then(if (shadow) Modifier.softShadow(CircleShape) else Modifier).background(fill, CircleShape),
             contentAlignment = Alignment.Center) {
@@ -140,9 +199,44 @@ fun TransportIcon(kind: Transport, modifier: Modifier = Modifier, color: Color =
 fun TransportButton(kind: Transport, description: String, size: Dp = 28.dp,
                     color: Color = LocalContentColor.current, modifier: Modifier = Modifier,
                     enabled: Boolean = true, onClick: () -> Unit) {
-    IconButton(onClick, modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp), enabled = enabled) {
-        TransportIcon(kind, Modifier.size(size).semantics { contentDescription = description },
-            if (enabled) color else color.copy(alpha = .38f))
+    val source = remember { MutableInteractionSource() }
+    Box(modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).pressFeedback(source, .88f)
+        .quietClickable(enabled = enabled, role = Role.Button, interactionSource = source, onClick = onClick),
+        contentAlignment = Alignment.Center) {
+        val iconModifier = Modifier.size(size).semantics { contentDescription = description }
+        val tint = if (enabled) color else color.copy(alpha = .38f)
+        if (kind == Transport.Play || kind == Transport.Pause) PlayPauseIcon(kind == Transport.Pause, iconModifier, tint)
+        else TransportIcon(kind, iconModifier, tint)
+    }
+}
+
+/** Two adjoining halves of the play triangle become the pause bars without changing the hit target. */
+@Composable
+private fun PlayPauseIcon(playing: Boolean, modifier: Modifier, color: Color) {
+    val progress by animateFloatAsState(if (playing) 1f else 0f, tween(200), label = "playPause")
+    Canvas(modifier) {
+        fun half(play: List<Pair<Float, Float>>, pause: List<Pair<Float, Float>>) {
+            val points = play.zip(pause) { a, b ->
+                androidx.compose.ui.geometry.Offset(
+                    (a.first + (b.first - a.first) * progress) * size.width,
+                    (a.second + (b.second - a.second) * progress) * size.height)
+            }
+            val path = Path()
+            points.forEachIndexed { index, point ->
+                val previous = points[(index + points.size - 1) % points.size]
+                val next = points[(index + 1) % points.size]
+                val before = androidx.compose.ui.geometry.lerp(point, previous, .10f)
+                val after = androidx.compose.ui.geometry.lerp(point, next, .10f)
+                if (index == 0) path.moveTo(before.x, before.y) else path.lineTo(before.x, before.y)
+                path.quadraticTo(point.x, point.y, after.x, after.y)
+            }
+            path.close()
+            drawPath(path, color)
+        }
+        half(listOf(.27f to .15f, .54f to .315f, .54f to .685f, .27f to .85f),
+            listOf(.24f to .15f, .43f to .15f, .43f to .85f, .24f to .85f))
+        half(listOf(.53f to .309f, .81f to .48f, .81f to .52f, .53f to .691f),
+            listOf(.57f to .15f, .76f to .15f, .76f to .85f, .57f to .85f))
     }
 }
 
@@ -153,7 +247,7 @@ fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modif
             subtitle: String = song.artist, trailing: (@Composable () -> Unit)? = null) {
     val tertiary = MaterialTheme.lilt.textTertiary
     Row(modifier.fillMaxWidth().heightIn(min = height).clip(RoundedCornerShape(12.dp))
-        .clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+        .quietClickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
         if (index != null) {
             Box(Modifier.width(22.dp), contentAlignment = Alignment.Center) {
                 if (active) AppIcon(Glyph.Volume, Modifier.size(18.dp), MaterialTheme.colorScheme.primary, "正在播放")
@@ -180,7 +274,7 @@ fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modif
 fun SectionTitle(title: String, action: String? = null, modifier: Modifier = Modifier, onAction: () -> Unit = {}) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-        if (action != null) Row(Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onAction)
+        if (action != null) Row(Modifier.clip(RoundedCornerShape(10.dp)).quietClickable(onClick = onAction)
             .heightIn(min = 40.dp).padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(action, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             AppIcon(Glyph.Right, Modifier.size(18.dp), MaterialTheme.colorScheme.onSurfaceVariant)
@@ -192,8 +286,10 @@ fun SectionTitle(title: String, action: String? = null, modifier: Modifier = Mod
 @Composable
 fun SoftPill(text: String, glyph: Glyph?, modifier: Modifier = Modifier, iconSize: Dp = 16.dp,
              horizontal: Dp = 12.dp, vertical: Dp = 6.dp, fontSize: Int = 12, enabled: Boolean = true, onClick: () -> Unit) {
-    Row(modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer)
-        .clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(horizontal = horizontal, vertical = vertical),
+    val source = remember { MutableInteractionSource() }
+    Row(modifier.heightIn(min = 48.dp).pressFeedback(source).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer)
+        .quietClickable(interactionSource = source, enabled = enabled, role = Role.Button, onClick = onClick)
+        .padding(horizontal = horizontal, vertical = vertical),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         if (glyph != null) AppIcon(glyph, Modifier.size(iconSize), MaterialTheme.colorScheme.primary)
         Text(text, fontSize = fontSize.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
@@ -238,13 +334,14 @@ fun RowDivider(modifier: Modifier = Modifier) {
 @Composable
 fun SettingRow(glyph: Glyph, label: String, value: String? = null, onClick: (() -> Unit)? = null,
                subtitle: String? = null, iconWrap: Boolean = false, trailing: (@Composable () -> Unit)? = null) {
+    val source = remember { MutableInteractionSource() }
     Row(Modifier.fillMaxWidth().heightIn(min = if (iconWrap) 58.dp else 48.dp)
-        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        .then(if (onClick != null) Modifier.quietClickable(interactionSource = source, pressedAlpha = 1f, onClick = onClick) else Modifier)
         .padding(vertical = if (iconWrap) 12.dp else 13.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        if (iconWrap) Box(Modifier.size(34.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(11.dp)),
+        if (iconWrap) Box(Modifier.size(34.dp).pressFeedback(source, .94f, .7f).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(11.dp)),
             contentAlignment = Alignment.Center) { AppIcon(glyph, Modifier.size(19.dp)) }
-        else AppIcon(glyph, Modifier.size(21.dp))
+        else AppIcon(glyph, Modifier.size(21.dp).pressFeedback(source, .94f, .7f))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(label, style = MaterialTheme.typography.bodyLarge)
@@ -262,14 +359,19 @@ fun SettingRow(glyph: Glyph, label: String, value: String? = null, onClick: (() 
 
 /** The design's 46×28 switch with a 22 thumb. */
 @Composable
-fun LiltSwitch(checked: Boolean, onChange: (Boolean) -> Unit, description: String, enabled: Boolean = true) {
+fun LiltSwitch(checked: Boolean, onChange: ((Boolean) -> Unit)?, description: String, enabled: Boolean = true,
+               interactionSource: MutableInteractionSource? = null) {
+    val source = interactionSource ?: remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
     val track by androidx.compose.animation.animateColorAsState(
         if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, label = "switchTrack")
     val offset by androidx.compose.animation.core.animateDpAsState(if (checked) 18.dp else 0.dp, label = "switchThumb")
-    Box(Modifier.size(48.dp, 48.dp).toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
-        .semantics { contentDescription = description }, contentAlignment = Alignment.CenterEnd) {
+    Box(Modifier.size(48.dp, 48.dp).then(if (onChange != null) Modifier.clip(CircleShape).quietIndication(source)
+        .toggleable(checked, interactionSource = source, indication = null, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+        .semantics { contentDescription = description } else Modifier), contentAlignment = Alignment.CenterEnd) {
         Box(Modifier.size(46.dp, 28.dp).background(track.copy(alpha = if (enabled) 1f else .5f), RoundedCornerShape(14.dp)).padding(3.dp)) {
-            Box(Modifier.offset(x = offset).size(22.dp).shadow(1.5.dp, CircleShape).background(Color.White, CircleShape))
+            Box(Modifier.offset(x = offset).size(22.dp).graphicsLayer { scaleX = if (pressed) .9f else 1f; scaleY = if (pressed) .9f else 1f }
+                .shadow(1.5.dp, CircleShape).background(Color.White, CircleShape))
         }
     }
 }

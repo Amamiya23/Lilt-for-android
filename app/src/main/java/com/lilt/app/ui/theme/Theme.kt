@@ -8,22 +8,53 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// Fixed colours shared by both themes: the player's backdrop, artwork placeholders and the daily card.
+// Radix Colors sRGB scales. Steps 1–2: surfaces, 3–5: controls, 6–8: borders, 11–12: text.
+// https://www.radix-ui.com/colors/docs/palette-composition/understanding-the-scale
 object Radix {
     val White = Color.White
     val Black = Color.Black
-    val Gray8 = Color(0xFFB4B8BF)
-    val PlayerBase = Color(0xFF5A3440)
-    val PlayerTint = Color(0xFF3A1F2A)
-    val PlayerShade = Color(0xFF1A0F14)
-    val Like = Color(0xFFF0384B)
-    val Ink = Color(0xFF1B211E)
-    val ChartRise = Color(0xFF1FB86A)
-    val ChartHot = Color(0xFFF2994A)
-    val ChartNew = Color(0xFF5B8DEF)
-    val Clover = Color(0xFF2BB673)
-    val VipStart = Color(0xFF2BC77A)
-    val VipEnd = Color(0xFF16A35C)
+    val Slate1 = Color(0xFFFCFCFD)
+    val Slate2 = Color(0xFFF9F9FB)
+    val Slate3 = Color(0xFFF0F0F3)
+    val Slate6 = Color(0xFFD9D9E0)
+    val Slate8 = Color(0xFFB9BBC6)
+    val Slate11 = Color(0xFF60646C)
+    val Slate12 = Color(0xFF1C2024)
+    val SlateDark1 = Color(0xFF111113)
+    val SlateDark2 = Color(0xFF18191B)
+    val SlateDark3 = Color(0xFF212225)
+    val SlateDark4 = Color(0xFF272A2D)
+    val SlateDark5 = Color(0xFF2E3135)
+    val SlateDark6 = Color(0xFF363A3F)
+    val SlateDark8 = Color(0xFF5A6169)
+    val SlateDark11 = Color(0xFFB0B4BA)
+    val SlateDark12 = Color(0xFFEDEEF0)
+    val Green3 = Color(0xFFE6F6EB)
+    val Green9 = Color(0xFF30A46C)
+    val Green11 = Color(0xFF218358)
+    val Green12 = Color(0xFF193B2D)
+    val GreenDark1 = Color(0xFF0E1512)
+    val GreenDark3 = Color(0xFF132D21)
+    val GreenDark11 = Color(0xFF3DD68C)
+    val Ruby3 = Color(0xFFFEEAED)
+    val Ruby11 = Color(0xFFCA244D)
+    val RubyDark3 = Color(0xFF3A141E)
+    val RubyDark7 = Color(0xFF883447)
+    val RubyDark11 = Color(0xFFFF949D)
+    val PlayerBase = RubyDark7
+    val PlayerTint = RubyDark3
+    val PlayerShade = Color(0xFF191113) // rubyDark1
+    val DailyStart = Color(0xFF853A2D) // tomatoDark7
+    val DailyEnd = Color(0xFFAC4D39) // tomatoDark8
+    val DailyShade = Color(0xFF391714) // tomatoDark3
+    val Like = RubyDark11
+    val Ink = Slate12
+    val ChartRise = Green11
+    val ChartHot = Color(0xFFCC4E00) // orange11
+    val ChartNew = Color(0xFF0D74CE) // blue11
+    val Clover = Green11
+    val VipStart = Green9
+    val VipEnd = Green11
 }
 
 /** The Pencil design's tokens that Material's colour scheme has no slot for. */
@@ -39,58 +70,58 @@ data class LiltColors(
 )
 
 private val LightTokens = LiltColors(
-    textTertiary = Color(0xFFB4B8BF), divider = Color(0xFFECEEF1), like = Color(0xFFF0384B),
-    glass = Color(0xC2F8F9FB), glassEdge = Color(0x1216181C), chipGlass = Color(0x8CFFFFFF), shadow = Color(0xFF16181C),
+    textTertiary = Radix.Slate11, divider = Radix.Slate6, like = Radix.Ruby11,
+    glass = Radix.Slate2, glassEdge = Radix.Slate6, chipGlass = Radix.White.copy(alpha = .55f), shadow = Radix.Slate12,
 )
 private val DarkTokens = LiltColors(
-    textTertiary = Color(0xFF5A5E66), divider = Color(0xFF26272B), like = Color(0xFFFF5A6A),
-    glass = Color(0xC21A1B1E), glassEdge = Color(0x14FFFFFF), chipGlass = Color(0x8C1A1B1E), shadow = Color(0xFF000000),
+    textTertiary = Radix.SlateDark11, divider = Radix.SlateDark6, like = Radix.RubyDark11,
+    glass = Radix.SlateDark2, glassEdge = Radix.SlateDark6, chipGlass = Radix.SlateDark2.copy(alpha = .55f), shadow = Radix.Black,
 )
 val LocalLiltColors = staticCompositionLocalOf { LightTokens }
 
 enum class ThemeMode(val label: String) { System("跟随系统"), Light("浅色"), Dark("深色") }
 
 private val Light = lightColorScheme(
-    primary = Color(0xFF1FB86A), onPrimary = Color.White,
-    primaryContainer = Color(0xFFE3F6EC), onPrimaryContainer = Color(0xFF1FB86A),
-    secondary = Color(0xFF8A8F98), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE3F6EC), onSecondaryContainer = Color(0xFF16181C),
-    tertiary = Color(0xFF1FB86A), onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFE3F6EC), onTertiaryContainer = Color(0xFF16181C),
-    background = Color(0xFFF5F6F8), onBackground = Color(0xFF16181C),
-    surface = Color.White, onSurface = Color(0xFF16181C),
-    surfaceVariant = Color(0xFFEEF0F3), onSurfaceVariant = Color(0xFF8A8F98),
+    primary = Radix.Green11, onPrimary = Radix.White,
+    primaryContainer = Radix.Green3, onPrimaryContainer = Radix.Green11,
+    secondary = Radix.Slate11, onSecondary = Radix.White,
+    secondaryContainer = Radix.Green3, onSecondaryContainer = Radix.Slate12,
+    tertiary = Radix.Green11, onTertiary = Radix.White,
+    tertiaryContainer = Radix.Green3, onTertiaryContainer = Radix.Slate12,
+    background = Radix.Slate2, onBackground = Radix.Slate12,
+    surface = Radix.White, onSurface = Radix.Slate12,
+    surfaceVariant = Radix.Slate3, onSurfaceVariant = Radix.Slate11,
     surfaceTint = Color.Transparent,
-    inverseSurface = Color(0xFF16181C), inverseOnSurface = Color(0xFFF5F6F8), inversePrimary = Color(0xFF3DD68C),
-    surfaceBright = Color.White, surfaceDim = Color(0xFFEEF0F3),
-    surfaceContainer = Color.White, surfaceContainerLow = Color.White,
-    surfaceContainerLowest = Color.White, surfaceContainerHigh = Color.White,
-    surfaceContainerHighest = Color(0xFFEEF0F3),
-    outline = Color(0xFFB4B8BF), outlineVariant = Color(0xFFECEEF1),
-    error = Color(0xFFE5484D), onError = Color.White,
-    errorContainer = Color(0xFFFFEDEE), onErrorContainer = Color(0xFFE5484D),
-    scrim = Color.Black,
+    inverseSurface = Radix.Slate12, inverseOnSurface = Radix.Slate2, inversePrimary = Radix.GreenDark11,
+    surfaceBright = Radix.White, surfaceDim = Radix.Slate3,
+    surfaceContainer = Radix.White, surfaceContainerLow = Radix.White,
+    surfaceContainerLowest = Radix.White, surfaceContainerHigh = Radix.White,
+    surfaceContainerHighest = Radix.Slate3,
+    outline = Radix.Slate8, outlineVariant = Radix.Slate6,
+    error = Radix.Ruby11, onError = Radix.White,
+    errorContainer = Radix.Ruby3, onErrorContainer = Radix.Ruby11,
+    scrim = Radix.Black,
 )
 private val Dark = darkColorScheme(
-    primary = Color(0xFF3DD68C), onPrimary = Color(0xFF06210F),
-    primaryContainer = Color(0xFF1C3328), onPrimaryContainer = Color(0xFF3DD68C),
-    secondary = Color(0xFF8A8F98), onSecondary = Color(0xFF0F1012),
-    secondaryContainer = Color(0xFF1C3328), onSecondaryContainer = Color(0xFFF2F3F5),
-    tertiary = Color(0xFF3DD68C), onTertiary = Color(0xFF06210F),
-    tertiaryContainer = Color(0xFF1C3328), onTertiaryContainer = Color(0xFFF2F3F5),
-    background = Color(0xFF0F1012), onBackground = Color(0xFFF2F3F5),
-    surface = Color(0xFF1A1B1E), onSurface = Color(0xFFF2F3F5),
-    surfaceVariant = Color(0xFF242529), onSurfaceVariant = Color(0xFF8A8F98),
+    primary = Radix.GreenDark11, onPrimary = Radix.GreenDark1,
+    primaryContainer = Radix.GreenDark3, onPrimaryContainer = Radix.GreenDark11,
+    secondary = Radix.SlateDark11, onSecondary = Radix.SlateDark1,
+    secondaryContainer = Radix.GreenDark3, onSecondaryContainer = Radix.SlateDark12,
+    tertiary = Radix.GreenDark11, onTertiary = Radix.GreenDark1,
+    tertiaryContainer = Radix.GreenDark3, onTertiaryContainer = Radix.SlateDark12,
+    background = Radix.SlateDark1, onBackground = Radix.SlateDark12,
+    surface = Radix.SlateDark2, onSurface = Radix.SlateDark12,
+    surfaceVariant = Radix.SlateDark3, onSurfaceVariant = Radix.SlateDark11,
     surfaceTint = Color.Transparent,
-    inverseSurface = Color(0xFFF2F3F5), inverseOnSurface = Color(0xFF1A1B1E), inversePrimary = Color(0xFF1FB86A),
-    surfaceBright = Color(0xFF242529), surfaceDim = Color(0xFF0F1012),
-    surfaceContainer = Color(0xFF1A1B1E), surfaceContainerLow = Color(0xFF1A1B1E),
-    surfaceContainerLowest = Color(0xFF0F1012), surfaceContainerHigh = Color(0xFF242529),
-    surfaceContainerHighest = Color(0xFF2E2F33),
-    outline = Color(0xFF5A5E66), outlineVariant = Color(0xFF26272B),
-    error = Color(0xFFFF6369), onError = Color(0xFF0F1012),
-    errorContainer = Color(0xFF3B1219), onErrorContainer = Color(0xFFFF6369),
-    scrim = Color.Black,
+    inverseSurface = Radix.SlateDark12, inverseOnSurface = Radix.SlateDark2, inversePrimary = Radix.Green11,
+    surfaceBright = Radix.SlateDark4, surfaceDim = Radix.SlateDark1,
+    surfaceContainer = Radix.SlateDark2, surfaceContainerLow = Radix.SlateDark2,
+    surfaceContainerLowest = Radix.SlateDark1, surfaceContainerHigh = Radix.SlateDark4,
+    surfaceContainerHighest = Radix.SlateDark5,
+    outline = Radix.SlateDark8, outlineVariant = Radix.SlateDark6,
+    error = Radix.RubyDark11, onError = Radix.SlateDark1,
+    errorContainer = Radix.RubyDark3, onErrorContainer = Radix.RubyDark11,
+    scrim = Radix.Black,
 )
 val LiltTypography = Typography(
     headlineLarge = TextStyle(fontSize = 30.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold),

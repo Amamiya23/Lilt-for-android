@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -57,7 +58,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
         SongShelf((profile?.name?.let { "「$it」，" } ?: "") + "这是你的幸运好歌", it)
     }
     PullToRefreshBox(isRefreshing = state.homeLoading && home.playlists.isNotEmpty(), onRefresh = vm::refreshHome) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = topPadding(8.dp), bottom = bottomPadding),
+        LazyColumn(Modifier.fillMaxSize().testTag("home-feed"), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = topPadding(8.dp), bottom = bottomPadding),
             verticalArrangement = Arrangement.spacedBy(28.dp)) {
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -70,7 +71,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                             if (state.preview) Text("设计预览", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    Box(Modifier.size(48.dp).clip(CircleShape).clickable { vm.navigate(if (profile == null) Destination.Login else Destination.Library) }
+                    Box(Modifier.size(48.dp).clip(CircleShape).quietClickable { vm.navigate(if (profile == null) Destination.Login else Destination.Library) }
                         .semantics { contentDescription = "我的账号" }, contentAlignment = Alignment.Center) {
                         if (profile?.avatar?.isNotBlank() == true) Artwork(profile.avatar, Modifier.size(40.dp), 20.dp)
                         else Box(Modifier.size(40.dp).background(MaterialTheme.colorScheme.surface, CircleShape), contentAlignment = Alignment.Center) {
@@ -86,7 +87,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                         .forEachIndexed { i, (glyph, label) ->
                             val shape = RoundedCornerShape(16.dp)
                             Column(Modifier.weight(1f).softShadow(shape, 4.dp).clip(shape).background(MaterialTheme.colorScheme.surface)
-                                .clickable {
+                                .quietClickable {
                                     when (i) {
                                         0 -> lucky?.songs?.let { vm.play(it, shuffle = true, source = "猜你想听"); vm.showPlayer(true) } ?: vm.refreshHome()
                                         1 -> vm.openPlaylists("歌单广场", home.playlists)
@@ -167,7 +168,7 @@ private fun SongShelfSection(shelf: SongShelf, state: AppState, vm: LiltViewMode
 @Composable
 private fun ChartRow(chart: Playlist, index: Int, onClick: () -> Unit) {
     val accent = listOf(Radix.ChartRise, Radix.ChartHot, Radix.ChartNew)[index % 3]
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+    Row(Modifier.fillMaxWidth().quietClickable(onClick = onClick).padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Artwork(chart.cover, Modifier.size(72.dp), 12.dp, chart.title)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -190,16 +191,16 @@ private fun DailyCard(songs: List<Song>, signedIn: Boolean, onClick: () -> Unit)
     val foreground = Color.White
     val shape = RoundedCornerShape(24.dp)
     BoxWithConstraints(Modifier.fillMaxWidth().height(224.dp).shadow(14.dp, shape,
-        ambientColor = Color(0xFF3D181E).copy(alpha = .2f), spotColor = Color(0xFF3D181E).copy(alpha = .25f))
-        .clip(shape).background(Brush.linearGradient(listOf(Color(0xFF6A3632), Color(0xFF7F413A), Color(0xFF3D181E).copy(alpha = .9f)),
+        ambientColor = Radix.DailyShade.copy(alpha = .2f), spotColor = Radix.DailyShade.copy(alpha = .25f))
+        .clip(shape).background(Brush.linearGradient(listOf(Radix.DailyStart, Radix.DailyEnd, Radix.DailyShade.copy(alpha = .9f)),
             start = Offset(Float.POSITIVE_INFINITY, 0f), end = Offset(0f, Float.POSITIVE_INFINITY)))
-        .clickable(onClick = onClick)) {
+        .quietClickable(onClick = onClick)) {
         val width = maxWidth
         if (songs.firstOrNull()?.cover?.isNotBlank() == true) {
             coil.compose.AsyncImage(songs.first().cover, null, Modifier.fillMaxSize().blur(28.dp).alpha(.28f),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop)
         }
-        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color(0xD93D181E), .6f to Color.Transparent)))
+        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Radix.DailyShade.copy(alpha = .85f), .6f to Color.Transparent)))
         Canvas(Modifier.fillMaxSize()) {
             val center = Offset(size.width * .84f, size.height * .5f)
             for (i in 0..18) drawCircle(foreground.copy(alpha = (.06f - i * .0025f).coerceAtLeast(.012f)),
@@ -216,8 +217,8 @@ private fun DailyCard(songs: List<Song>, signedIn: Boolean, onClick: () -> Unit)
                 else "${songs.map { it.artist }.distinct().take(2).joinToString("、").take(18)} 等 ${songs.size} 首",
                 fontSize = 12.sp, color = foreground.copy(alpha = .8f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(9.dp))
-            Row(Modifier.height(36.dp).shadow(8.dp, CircleShape, ambientColor = Color(0xFF111311).copy(alpha = .35f),
-                spotColor = Color(0xFF111311).copy(alpha = .35f)).background(foreground, CircleShape).padding(horizontal = 18.dp),
+            Row(Modifier.height(36.dp).shadow(8.dp, CircleShape, ambientColor = Radix.SlateDark1.copy(alpha = .35f),
+                spotColor = Radix.SlateDark1.copy(alpha = .35f)).background(foreground, CircleShape).padding(horizontal = 18.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TransportIcon(Transport.Play, Modifier.size(14.dp), Radix.Ink)
                 Text(if (signedIn) "播放" else "去登录", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Radix.Ink)
@@ -232,14 +233,14 @@ private fun DailyCard(songs: List<Song>, signedIn: Boolean, onClick: () -> Unit)
             }
             Box(Modifier.size(104.dp).align(Alignment.CenterEnd)) {
                 Canvas(Modifier.fillMaxSize()) {
-                    drawCircle(Color(0xFF141012))
+                    drawCircle(Radix.SlateDark1)
                     for (i in 0..10) drawCircle(foreground.copy(alpha = .07f), size.minDimension * (.22f + .025f * i), style = Stroke(.6.dp.toPx()))
                 }
                 if (songs.isNotEmpty()) Artwork(songs.first().cover, Modifier.size(37.dp).align(Alignment.Center), 19.dp)
             }
             if (songs.isNotEmpty()) Artwork(songs.first().cover,
                 Modifier.size(112.dp).align(Alignment.Center).offset(x = 4.dp).shadow(16.dp, RoundedCornerShape(12.dp),
-                    ambientColor = Color(0xFF111311).copy(alpha = .5f), spotColor = Color(0xFF111311).copy(alpha = .5f)), 12.dp)
+                    ambientColor = Radix.SlateDark1.copy(alpha = .5f), spotColor = Radix.SlateDark1.copy(alpha = .5f)), 12.dp)
         }
     }
 }
@@ -279,7 +280,7 @@ fun AlbumCollectionScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp)
 
 @Composable
 private fun AlbumRow(album: Album, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(66.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick),
+    Row(Modifier.fillMaxWidth().height(66.dp).clip(RoundedCornerShape(12.dp)).quietClickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         Artwork(album.cover, Modifier.size(52.dp), 10.dp, album.title)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -292,7 +293,7 @@ private fun AlbumRow(album: Album, onClick: () -> Unit) {
 
 @Composable
 fun PlaylistCard(playlist: Playlist, onClick: () -> Unit) {
-    Column(Modifier.width(132.dp).clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick),
+    Column(Modifier.width(132.dp).clip(RoundedCornerShape(16.dp)).quietClickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Box {
             Artwork(playlist.cover, Modifier.size(132.dp), 16.dp)
@@ -338,7 +339,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
                 val selected = state.searchType == type
                 Box(Modifier.height(33.dp).clip(CircleShape)
                     .background(if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface)
-                    .clickable(role = Role.Tab) { vm.search(type = type) }.padding(horizontal = 14.dp),
+                    .quietClickable(role = Role.Tab) { vm.search(type = type) }.padding(horizontal = 14.dp),
                     contentAlignment = Alignment.Center) {
                     Text(label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                         color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface)
@@ -358,7 +359,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 state.searchHistory.forEach { query ->
                                     Box(Modifier.height(33.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface)
-                                        .clickable { vm.search(query) }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                                        .quietClickable { vm.search(query) }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
                                         Text(query, fontSize = 13.sp)
                                     }
                                 }
@@ -370,7 +371,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
                         Column {
                             SectionTitle("听点什么")
                             listOf("周杰伦", "王菲", "陈奕迅", "纯音乐", "华语经典", "睡前轻音乐").forEachIndexed { index, query ->
-                                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { vm.search(query) }.padding(vertical = 12.dp),
+                                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).quietClickable { vm.search(query) }.padding(vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically) {
                                     Text("%02d".format(index + 1), Modifier.width(36.dp),
                                         color = if (index < 3) MaterialTheme.colorScheme.primary else MaterialTheme.lilt.textTertiary,
@@ -419,7 +420,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
 private fun ArtistCard(artist: Artist, onOpen: () -> Unit, onPlay: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     Row(Modifier.fillMaxWidth().softShadow(shape, 4.dp).clip(shape).background(MaterialTheme.colorScheme.surface)
-        .clickable(onClick = onOpen).padding(16.dp), verticalAlignment = Alignment.CenterVertically,
+        .quietClickable(onClick = onOpen).padding(16.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Artwork(artist.cover, Modifier.size(72.dp), 36.dp, artist.name)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -428,7 +429,7 @@ private fun ArtistCard(artist: Artist, onOpen: () -> Unit, onPlay: () -> Unit) {
             val stats = listOfNotNull(artist.songCount.takeIf { it > 0 }?.let { "单曲 $it" }, artist.albumCount.takeIf { it > 0 }?.let { "专辑 $it" })
             if (stats.isNotEmpty()) Text(stats.joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Box(Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onPlay)
+        Box(Modifier.size(48.dp).clip(CircleShape).quietClickable(role = Role.Button, onClick = onPlay)
             .semantics { contentDescription = "播放${artist.name}的热门歌曲" }, contentAlignment = Alignment.Center) {
             Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
                 TransportIcon(Transport.Play, Modifier.size(22.dp).offset(x = 1.dp), MaterialTheme.colorScheme.onPrimary)
@@ -439,7 +440,7 @@ private fun ArtistCard(artist: Artist, onOpen: () -> Unit, onPlay: () -> Unit) {
 
 @Composable
 fun PlaylistListRow(playlist: Playlist, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(66.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick),
+    Row(Modifier.fillMaxWidth().height(66.dp).clip(RoundedCornerShape(12.dp)).quietClickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         Artwork(playlist.cover, Modifier.size(52.dp), 12.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -487,7 +488,7 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                         }
                     }
                     Artwork(playlist.cover, Modifier.size(188.dp).shadow(18.dp, RoundedCornerShape(if (round) 94.dp else 20.dp),
-                        ambientColor = Color(0xFF2A1B40).copy(alpha = .25f), spotColor = Color(0xFF2A1B40).copy(alpha = .25f)),
+                        ambientColor = Radix.SlateDark1.copy(alpha = .25f), spotColor = Radix.SlateDark1.copy(alpha = .25f)),
                         if (round) 94.dp else 20.dp, playlist.title)
                     Spacer(Modifier.height(20.dp))
                     Text(playlist.title, Modifier.padding(horizontal = 12.dp), fontSize = 20.sp, lineHeight = 28.sp,
@@ -501,14 +502,14 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         val enabled = detail.songs.isNotEmpty()
                         Row(Modifier.weight(1f).height(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else .5f))
-                            .clickable(enabled, role = Role.Button) { vm.play(detail.songs) },
+                            .quietClickable(enabled, role = Role.Button) { vm.play(detail.songs) },
                             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                             TransportIcon(Transport.Play, Modifier.size(20.dp), MaterialTheme.colorScheme.onPrimary)
                             Spacer(Modifier.width(8.dp))
                             Text("播放全部", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimary)
                         }
                         Row(Modifier.weight(1f).height(48.dp).softShadow(CircleShape, 4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface)
-                            .clickable(enabled, role = Role.Button) { vm.play(detail.songs, shuffle = true) },
+                            .quietClickable(enabled, role = Role.Button) { vm.play(detail.songs, shuffle = true) },
                             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                             AppIcon(Glyph.Shuffle, Modifier.size(20.dp), MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(8.dp))
@@ -523,7 +524,9 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
         if (state.detailError != null) item { EmptyState("加载失败", state.detailError, Glyph.Alert, "重试") { vm.back(); vm.openPlaylist(playlist) } }
         itemsIndexed(detail.songs, key = { index, song -> "$index-${song.mid}" }) { index, song ->
             SongRow(song, { vm.play(detail.songs, index) }, { onMore(song) }, Modifier.padding(horizontal = 20.dp),
-                active = player.current?.id == song.mid, index = index + 1, height = 60.dp)
+                active = player.current?.id == song.mid,
+                index = if (playlist.id.startsWith("album:")) index + 1 else null,
+                height = if (playlist.id.startsWith("album:")) 60.dp else 68.dp)
         }
         if (!state.detailLoading && state.detailError == null && detail.songs.isEmpty()) item { EmptyState("这里还没有歌曲") }
     }
