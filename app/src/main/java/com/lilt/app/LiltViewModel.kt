@@ -22,9 +22,20 @@ import org.json.JSONObject
 
 /** Charts print their names on their covers; recommendations browse densely; a user's own collections stay a list. */
 enum class CollectionLayout { List, Covers, Compact }
-enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Purchased, Local }
+enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Purchased, Local, Square }
 enum class PlayerPanel { Artwork, Lyrics, Queue }
 enum class PurchasedTab(val label: String) { Albums("专辑"), Songs("单曲") }
+
+/** 歌单广场: one category's playlists at a time, continued page by page. */
+data class SquareFeed(
+    val tabs: List<SquareTag> = listOf(SquareTag.RECOMMENDED),
+    val tab: SquareTag = SquareTag.RECOMMENDED,
+    val playlists: List<Playlist> = emptyList(),
+    val next: String? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+    val groups: List<SquareTagGroup> = emptyList(),
+)
 
 data class AppState(
     val destination: Destination = Destination.Home,
@@ -42,6 +53,8 @@ data class AppState(
     val searched: Boolean = false,
     val searchError: String? = null,
     val searchHistory: List<String> = emptyList(),
+    val hotSearches: List<HotSearch> = emptyList(),
+    val square: SquareFeed = SquareFeed(),
     val detail: PlaylistDetail? = null,
     val detailLoading: Boolean = false,
     val detailError: String? = null,
@@ -126,6 +139,9 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
     val state = mutable.asStateFlow()
     private val songBook = mutableMapOf<String, Song>()
     private var searchJob: Job? = null
+    private var squareJob: Job? = null
+    private var squareMetaJob: Job? = null
+    private var hotJob: Job? = null
     private var detailJob: Job? = null
     private var purchasedJob: Job? = null
     private var qrJob: Job? = null
@@ -418,6 +434,94 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             mutable.update { it.copy(searching = false, searched = true, searchError = readable(error)) }
+        }
+    }
+    /** Trending searches are fetched once per session, when the empty search page first needs them. */
+    fun loadHotSearches() {
+        if (state.value.hotSearches.isNotEmpty() || hotJob?.isActive == true) return
+        if (state.value.preview) {
+            mutable.update { it.copy(hotSearches = listOf("周杰伦", "王菲", "陈奕迅", "纯音乐").map { q -> HotSearch(q, false) }) }
+            return
+        }
+        hotJob = viewModelScope.launch {
+            try {
+                val hot = repository.hotSearches()
+                mutable.update { it.copy(hotSearches = hot) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+            }
+        }
+    }
+    fun openSquare() {
+        go(Destination.Square)
+        mutable.update { it.copy(destination = Destination.Square) }
+        val square = state.value.square
+        if (state.value.preview) {
+            mutable.update { it.copy(square = it.square.copy(playlists = it.home.playlists)) }
+            return
+        }
+        if (square.tabs.size <= 1 && squareMetaJob?.isActive != true) squareMetaJob = viewModelScope.launch {
+            try {
+                val tabs = repository.squareTabs()
+                if (tabs.isNotEmpty()) mutable.update { current ->
+                    // A category picked from 全部 stays among the tabs.
+                    val picked = current.square.tab.takeIf { tab -> tabs.none { it.id == tab.id } }
+                    current.copy(square = current.square.copy(tabs = tabs + listOfNotNull(picked)))
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+            }
+        }
+        if (square.playlists.isEmpty() && !square.loading) selectSquareTab(square.tab)
+    }
+    fun selectSquareTab(tag: SquareTag) {
+        squareJob?.cancel()
+        mutable.update { current ->
+            val tabs = current.square.tabs.let { tabs -> if (tabs.any { it.id == tag.id }) tabs else tabs + tag }
+            current.copy(square = current.square.copy(tabs = tabs, tab = tag, playlists = emptyList(), next = null, loading = true, error = null))
+        }
+        loadSquarePage(tag, "")
+    }
+    fun loadMoreSquare() {
+        val square = state.value.square
+        if (square.loading || square.error != null) return
+        loadSquarePage(square.tab, square.next ?: return)
+    }
+    private fun loadSquarePage(tag: SquareTag, cursor: String) {
+        mutable.update { it.copy(square = it.square.copy(loading = true, error = null)) }
+        squareJob = viewModelScope.launch {
+            try {
+                val page = repository.squarePage(tag, cursor)
+                mutable.update { current ->
+                    if (current.square.tab != tag) return@update current
+                    val known = current.square.playlists.map { it.id }.toSet()
+                    current.copy(square = current.square.copy(playlists = current.square.playlists + page.playlists.filter { it.id !in known },
+                        next = page.next, loading = false))
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                mutable.update { it.copy(square = it.square.copy(loading = false, error = readable(error))) }
+            }
+        }
+    }
+    fun retrySquare() {
+        val square = state.value.square
+        if (square.playlists.isEmpty()) selectSquareTab(square.tab)
+        else square.next?.let {
+            mutable.update { current -> current.copy(square = current.square.copy(error = null)) }
+            loadSquarePage(square.tab, it)
+        }
+    }
+    fun loadSquareGroups() {
+        if (state.value.square.groups.isNotEmpty() || state.value.preview) return
+        viewModelScope.launch {
+            try {
+                val groups = repository.squareTagGroups()
+                mutable.update { it.copy(square = it.square.copy(groups = groups)) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                notify(readable(error))
+            }
         }
     }
     fun clearSearchHistory() {

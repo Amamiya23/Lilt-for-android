@@ -797,13 +797,63 @@ class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkM
     private suspend fun featuredPlaylists(): List<Playlist> {
         val data = rpc("music.playlist.PlaylistSquare", "GetRecommendFeed", json("From" to 0, "Size" to 18))
         val entries = data.optJSONArray("List") ?: throw MusicApiException("QQ 音乐未返回推荐歌单")
-        return entries.objects().mapNotNull { entry ->
-            val basic = entry.optJSONObject("Playlist")?.optJSONObject("basic") ?: return@mapNotNull null
-            val id = basic.number("tid").takeIf { it > 0 } ?: return@mapNotNull null
-            Playlist(id.toString(), basic.text("title"),
-                basic.optJSONObject("cover")?.text("default_url", "big_url", "medium_url", "small_url").orEmpty().https(),
-                basic.optJSONObject("creator")?.text("nick").orEmpty(), basic.optInt("song_cnt"), basic.number("play_cnt"))
+        return entries.objects().mapNotNull { it.optJSONObject("Playlist")?.optJSONObject("basic")?.let(MusicParsers::squarePlaylist) }
+    }
+
+    /** 歌单广场's tabs. GetSquareTab omits 推荐 and AI歌单 under ct=20, so it is asked with ct=24. */
+    suspend fun squareTabs(): List<SquareTag> {
+        val data = rpc(SQUARE, "GetSquareTab", json(), SQUARE_COMM)
+        // AI歌单 (TagType 5) lists playlists that no detail API opens.
+        return data.optJSONArray("List").objects().filter { it.optInt("TagType") != 5 }
+            .mapNotNull { tag ->
+                val id = tag.optLong("TagID")
+                tag.text("TagName").takeIf { it.isNotBlank() && id != 0L }?.let { SquareTag(id, it) }
+            }.distinctBy { it.id }
+    }
+
+    suspend fun squareTagGroups(): List<SquareTagGroup> {
+        val data = rpc(SQUARE, "GetAllTag", json("qq" to ""), SQUARE_COMM)
+        return data.optJSONArray("v_group").objects().mapNotNull { group ->
+            val tags = group.optJSONArray("v_item").objects().filter { it.optInt("source") != 1 }
+                .mapNotNull { tag -> tag.optLong("id").takeIf { it > 0 }?.let { SquareTag(it, tag.text("name")) } }
+                .filter { it.name.isNotBlank() }
+            group.text("group_name").takeIf { it.isNotBlank() && tags.isNotEmpty() }?.let { SquareTagGroup(it, tags) }
         }
+    }
+
+    /** 推荐 pages by offset up to QQ's FromLimit; a category pages by the last playlist's tid. */
+    suspend fun squarePage(tag: SquareTag, cursor: String): SquarePage {
+        if (tag.id == SquareTag.RECOMMENDED.id) {
+            val from = cursor.toIntOrNull() ?: 0
+            val data = rpc(SQUARE, "GetRecommendWhole",
+                json("IsReqHead" to false, "IsReqFeed" to true, "FeedReq" to json("From" to from, "Size" to SQUARE_PAGE)), SQUARE_COMM)
+            val feed = data.optJSONObject("FeedRsp") ?: throw MusicApiException("QQ 音乐未返回歌单广场")
+            val entries = feed.optJSONArray("List").objects()
+            val next = from + entries.size
+            return SquarePage(
+                entries.mapNotNull { it.optJSONObject("Playlist")?.optJSONObject("basic")?.let(MusicParsers::squarePlaylist) },
+                next.toString().takeIf { entries.isNotEmpty() && feed.optBoolean("HasMore") && next < feed.optInt("FromLimit", 400) },
+            )
+        }
+        // caller must be a string; the integer 0 is refused with 20011.
+        val data = rpc("playlist.PlayListCategoryServer", "get_category_content", json(
+            "caller" to (session?.musicId ?: "0"), "category_id" to tag.id, "titleid" to tag.id,
+            "size" to SQUARE_PAGE, "last_id" to cursor, "order" to 5, "is_parent" to 0,
+        ), SQUARE_COMM)
+        val content = data.optJSONObject("content") ?: throw MusicApiException("QQ 音乐未返回分类歌单")
+        val basics = content.optJSONArray("v_item").objects().mapNotNull { it.optJSONObject("basic") }
+        val last = basics.lastOrNull()?.number("tid")?.takeIf { it > 0 }
+        return SquarePage(basics.mapNotNull(MusicParsers::squarePlaylist),
+            last?.toString()?.takeIf { basics.size >= SQUARE_PAGE })
+    }
+
+    /** QQ's 30 trending searches; they need no login. */
+    suspend fun hotSearches(): List<HotSearch> {
+        val data = rpc("tencent_musicsoso_hotkey.HotkeyService", "GetHotkeyForQQMusicPC", json(),
+            { json("ct" to 24, "cv" to 0, "format" to "json") }, cookie = false)
+        return data.optJSONArray("vec_hotkey").objects().mapNotNull { entry ->
+            entry.text("query", "title").trim().takeIf { it.isNotEmpty() }?.let { HotSearch(it, entry.text("description") == "新歌") }
+        }.distinctBy { it.query }
     }
 
     private suspend fun personalizedPlaylists(): List<Playlist> {
@@ -1060,6 +1110,9 @@ class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkM
         private const val MUSICU = "https://u.y.qq.com/cgi-bin/musicu.fcg"
         private const val QIMEI_URL = "https://api.tencentmusic.com/tme/trpc/proxy"
         private val DEFAULT_COMM: (MusicSession?) -> JSONObject = { it?.comm() ?: json("ct" to 24, "cv" to 0) }
+        private const val SQUARE = "music.playlist.PlaylistSquare"
+        private const val SQUARE_PAGE = 60
+        private val SQUARE_COMM: (MusicSession?) -> JSONObject = { json("ct" to 24, "cv" to 0, "uin" to (it?.musicId ?: "0"), "format" to "json") }
         private val LYRIC_TIME = Regex("\\[\\d{1,3}:\\d{2}")
         private const val USER_AGENT = "QQMusic 14090008(android 10)"
         private const val LOGIN_JUMP = "https://graph.qq.com/oauth2.0/login_jump"
@@ -1111,6 +1164,14 @@ internal object PlaylistSongWrites {
 }
 
 internal object MusicParsers {
+    /** A playlist's `basic` object, as 歌单广场 returns it. */
+    fun squarePlaylist(basic: JSONObject): Playlist? {
+        val id = basic.number("tid").takeIf { it > 0 } ?: return null
+        return Playlist(id.toString(), basic.text("title"),
+            basic.optJSONObject("cover")?.text("default_url", "big_url", "medium_url", "small_url").orEmpty().https(),
+            basic.optJSONObject("creator")?.text("nick").orEmpty(), basic.optInt("song_cnt"), basic.number("play_cnt"))
+    }
+
     fun song(input: JSONObject): Song? {
         val item = input.optJSONObject("musicData") ?: input.optJSONObject("songInfo")
             ?: input.optJSONObject("track_info") ?: input

@@ -165,11 +165,11 @@ private fun SelectionAction(label: String, glyph: Glyph, enabled: Boolean, modif
 internal fun SongSelectionCheck(checked: Boolean) {
     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
         Box(Modifier.size(22.dp).background(
-            if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background, CircleShape)
+            if (checked) MaterialTheme.lilt.accent else MaterialTheme.colorScheme.background, CircleShape)
             .border(if (checked) 0.dp else 1.5.dp,
-                if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape),
+                if (checked) MaterialTheme.lilt.accent else MaterialTheme.colorScheme.outline, CircleShape),
             contentAlignment = Alignment.Center) {
-            if (checked) AppIcon(Glyph.Check, Modifier.size(16.dp), MaterialTheme.colorScheme.onPrimary)
+            if (checked) AppIcon(Glyph.Check, Modifier.size(16.dp), MaterialTheme.lilt.onAccent)
         }
     }
 }

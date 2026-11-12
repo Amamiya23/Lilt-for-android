@@ -407,7 +407,7 @@ fun LiltSwitch(checked: Boolean, onChange: ((Boolean) -> Unit)?, description: St
     val source = interactionSource ?: remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val track by androidx.compose.animation.animateColorAsState(
-        if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, label = "switchTrack")
+        if (checked) MaterialTheme.lilt.accent else MaterialTheme.colorScheme.surfaceVariant, label = "switchTrack")
     val offset by androidx.compose.animation.core.animateDpAsState(if (checked) 18.dp else 0.dp, label = "switchThumb")
     Box(Modifier.size(48.dp, 48.dp).then(if (onChange != null) Modifier.clip(CircleShape).quietIndication(source)
         .toggleable(checked, interactionSource = source, indication = null, enabled = enabled, role = Role.Switch, onValueChange = onChange)

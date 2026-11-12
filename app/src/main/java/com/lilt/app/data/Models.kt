@@ -29,6 +29,16 @@ data class Playlist(
     val albumId: Long = 0,
 )
 
+/** A 歌单广场 category, as QQ numbers them; [RECOMMENDED] is the square's own feed. */
+data class SquareTag(val id: Long, val name: String) {
+    companion object { val RECOMMENDED = SquareTag(-1, "推荐") }
+}
+data class SquareTagGroup(val name: String, val tags: List<SquareTag>)
+/** [next] continues the list; null at its end. */
+data class SquarePage(val playlists: List<Playlist>, val next: String?)
+/** A trending search; [fresh] marks QQ's 新歌. */
+data class HotSearch(val query: String, val fresh: Boolean)
+
 data class HomeFeed(
     val songs: List<Song> = emptyList(),
     val playlists: List<Playlist> = emptyList(),

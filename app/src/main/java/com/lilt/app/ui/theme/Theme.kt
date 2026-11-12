@@ -69,15 +69,20 @@ data class LiltColors(
     val glassEdge: Color,
     val chipGlass: Color,
     val shadow: Color,
+    /** Solid fills (Radix step 9 in light); [primary] stays step 11 for text and small accents. */
+    val accent: Color,
+    val onAccent: Color,
 )
 
 private val LightTokens = LiltColors(
     textTertiary = Radix.Slate11, divider = Radix.Slate6, like = Radix.Ruby11,
     glass = Radix.Slate2, glassEdge = Radix.Slate6, chipGlass = Radix.White.copy(alpha = .55f), shadow = Radix.Slate12,
+    accent = Radix.Green9, onAccent = Radix.White,
 )
 private val DarkTokens = LiltColors(
     textTertiary = Radix.SlateDark11, divider = Radix.SlateDark6, like = Radix.RubyDark11,
-    glass = Radix.SlateDark2, glassEdge = Radix.SlateDark6, chipGlass = Radix.SlateDark2.copy(alpha = .55f), shadow = Radix.Black,
+    glass = Radix.SlateDark2, glassEdge = Radix.SlateDark6, chipGlass = Radix.SlateDark3.copy(alpha = .55f), shadow = Radix.Black,
+    accent = Radix.GreenDark11, onAccent = Radix.GreenDark1,
 )
 val LocalLiltColors = staticCompositionLocalOf { LightTokens }
 
@@ -111,14 +116,15 @@ private val Dark = darkColorScheme(
     secondaryContainer = Radix.GreenDark3, onSecondaryContainer = Radix.SlateDark12,
     tertiary = Radix.GreenDark11, onTertiary = Radix.GreenDark1,
     tertiaryContainer = Radix.GreenDark3, onTertiaryContainer = Radix.SlateDark12,
-    background = Radix.SlateDark1, onBackground = Radix.SlateDark12,
-    surface = Radix.SlateDark2, onSurface = Radix.SlateDark12,
-    surfaceVariant = Radix.SlateDark3, onSurfaceVariant = Radix.SlateDark11,
+    // Step 2 as the page, not step 1: OLED panels render step 1 as pure black, and cards on step 3 then stand apart.
+    background = Radix.SlateDark2, onBackground = Radix.SlateDark12,
+    surface = Radix.SlateDark3, onSurface = Radix.SlateDark12,
+    surfaceVariant = Radix.SlateDark4, onSurfaceVariant = Radix.SlateDark11,
     surfaceTint = Color.Transparent,
     inverseSurface = Radix.SlateDark12, inverseOnSurface = Radix.SlateDark2, inversePrimary = Radix.Green11,
-    surfaceBright = Radix.SlateDark4, surfaceDim = Radix.SlateDark1,
-    surfaceContainer = Radix.SlateDark2, surfaceContainerLow = Radix.SlateDark2,
-    surfaceContainerLowest = Radix.SlateDark1, surfaceContainerHigh = Radix.SlateDark4,
+    surfaceBright = Radix.SlateDark5, surfaceDim = Radix.SlateDark2,
+    surfaceContainer = Radix.SlateDark3, surfaceContainerLow = Radix.SlateDark3,
+    surfaceContainerLowest = Radix.SlateDark2, surfaceContainerHigh = Radix.SlateDark4,
     surfaceContainerHighest = Radix.SlateDark5,
     outline = Radix.SlateDark8, outlineVariant = Radix.SlateDark6,
     error = Radix.RubyDark11, onError = Radix.SlateDark1,

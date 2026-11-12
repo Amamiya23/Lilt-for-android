@@ -251,7 +251,7 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
         "clear-cache" -> LiltDialog("清除缓存？", "清除", onDismiss = { choice = null }, onConfirm = {
             choice = null
             vm.clearCaches { context.imageLoader.memoryCache?.clear(); context.imageLoader.diskCache?.clear() }
-        }) { Text("已下载的歌曲不受影响") }
+        }, destructive = true) { Text("已下载的歌曲不受影响") }
         "licenses" -> OpenSourceSheet(onDismiss = { choice = null }, onOpenError = { vm.notify("无法打开链接") })
         "about" -> AlertDialog(onDismissRequest = { choice = null }, title = { Text("Lilt") },
             text = { Text("安静地，听音乐。\n\n基于 Kotlin 与 Jetpack Compose 开发的第三方 QQ 音乐客户端。音乐内容与收听权限由 QQ 音乐提供，版权归各权利人所有。") },

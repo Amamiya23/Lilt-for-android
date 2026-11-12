@@ -162,6 +162,7 @@ fun LiltApp(vm: LiltViewModel) {
                                     Destination.Albums -> AlbumCollectionScreen(state, vm, bottomPadding)
                                     Destination.Purchased -> PurchasedScreen(state, vm, bottomPadding, onMore)
                                     Destination.Local -> LocalScreen(state, vm, bottomPadding, onMore)
+                                    Destination.Square -> SquareScreen(state, vm, bottomPadding)
                                 } }
                                 if (destination in TopLevel) {
                                     tabStates.SaveableStateProvider(destination.name) { page() }
@@ -366,7 +367,7 @@ private fun MiniPlayer(player: PlaybackSnapshot, previewSong: Song?, preview: Bo
         }
         LinearProgressIndicator(progress = { if (preview) .24f else player.progress },
             modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp).fillMaxWidth().height(2.dp),
-            color = MaterialTheme.colorScheme.primary, trackColor = Color.Transparent, drawStopIndicator = {})
+            color = MaterialTheme.lilt.accent, trackColor = Color.Transparent, drawStopIndicator = {})
     }
 }
 

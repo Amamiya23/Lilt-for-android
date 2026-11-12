@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -101,7 +102,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                                 .quietClickable {
                                     when (i) {
                                         0 -> lucky?.songs?.let { vm.play(it, shuffle = true, source = "猜你想听"); vm.showPlayer(true) } ?: vm.refreshHome()
-                                        1 -> vm.openPlaylists("歌单广场", home.playlists, CollectionLayout.Compact)
+                                        1 -> vm.openSquare()
                                         2 -> vm.beginSearch(1)
                                         else -> home.charts.firstOrNull { it.title.contains("新歌") }?.let(vm::openPlaylist)
                                             ?: run { vm.notify("新歌榜暂不可用，请稍后重试"); vm.refreshHome() }
@@ -381,15 +382,7 @@ fun PlaylistCard(playlist: Playlist, modifier: Modifier = Modifier.width(132.dp)
     val radius = if (compact) 12.dp else 16.dp
     Column(modifier.clip(RoundedCornerShape(radius)).quietClickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
-        Box {
-            Artwork(playlist.cover, Modifier.fillMaxWidth().aspectRatio(1f), radius, playlist.title.takeUnless { titled })
-            if (playlist.playCount > 0) Row(Modifier.align(Alignment.TopEnd).padding(if (compact) 6.dp else 8.dp)
-                .background(Color.Black.copy(alpha = .35f), RoundedCornerShape(8.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                TransportIcon(Transport.Play, Modifier.size(9.dp), Color.White)
-                Text(formatCount(playlist.playCount), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-            }
-        }
+        Artwork(playlist.cover, Modifier.fillMaxWidth().aspectRatio(1f), radius, playlist.title.takeUnless { titled })
         if (titled) Text(playlist.title, style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
             maxLines = 2, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 2.dp))
@@ -399,9 +392,117 @@ fun PlaylistCard(playlist: Playlist, modifier: Modifier = Modifier.width(132.dp)
 private val SearchTabs = listOf("综合" to 0, "单曲" to 100, "专辑" to 2, "歌手" to 1, "歌单" to 3)
 
 @Composable
+private fun TabChip(label: String, selected: Boolean, glyph: Glyph? = null, onClick: () -> Unit) {
+    Row(Modifier.height(33.dp).clip(CircleShape)
+        .background(if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface)
+        .quietClickable(role = Role.Tab, onClick = onClick).padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        val color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface
+        Text(label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = color)
+        if (glyph != null) AppIcon(glyph, Modifier.size(14.dp), color)
+    }
+}
+
+/** The top trending searches, read down the left column and then the right. */
+@Composable
+private fun HotSearches(hot: List<HotSearch>, onSearch: (String) -> Unit) {
+    Column {
+        SectionTitle("热搜")
+        val half = (hot.size + 1) / 2
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            listOf(hot.take(half), hot.drop(half)).forEachIndexed { column, entries ->
+                Column(Modifier.weight(1f)) {
+                    entries.forEachIndexed { index, entry ->
+                        val rank = column * half + index
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).quietClickable { onSearch(entry.query) }
+                            .padding(vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("${rank + 1}", Modifier.width(28.dp),
+                                color = if (rank < 3) MaterialTheme.colorScheme.primary else MaterialTheme.lilt.textTertiary,
+                                style = MaterialTheme.typography.labelLarge)
+                            Text(entry.query, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (entry.fresh) Text("新", Modifier.padding(start = 6.dp)
+                                .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp), fontSize = 10.sp, lineHeight = 14.sp, fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SquareScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp) {
+    val square = state.square
+    var picking by remember { mutableStateOf(false) }
+    val grid = rememberLazyGridState()
+    val tabs = rememberLazyListState()
+    LaunchedEffect(square.tab) {
+        grid.scrollToItem(0)
+        square.tabs.indexOf(square.tab).takeIf { it >= 0 }?.let { tabs.animateScrollToItem(it) }
+    }
+    // Continue a dozen covers before the end, so scrolling rarely meets the loader.
+    LaunchedEffect(grid) {
+        snapshotFlow { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index to grid.layoutInfo.totalItemsCount }
+            .distinctUntilChanged()
+            .collect { (last, total) -> if (last != null && total > 0 && last >= total - 12) vm.loadMoreSquare() }
+    }
+    if (picking) LiltSheet({ picking = false }, dark = false) { colors ->
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            if (square.groups.isEmpty()) LoadingState()
+            square.groups.forEach { group ->
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(group.name, fontSize = 13.sp, color = colors.secondary, modifier = Modifier.padding(horizontal = 4.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        group.tags.forEach { tag ->
+                            val selected = tag.id == square.tab.id
+                            Box(Modifier.height(36.dp).clip(CircleShape)
+                                .background(if (selected) colors.content else colors.tile)
+                                .quietClickable { picking = false; vm.selectSquareTab(tag) }.padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center) {
+                                Text(tag.name, fontSize = 13.sp, color = if (selected) colors.container else colors.content)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Column(Modifier.fillMaxSize().padding(top = topPadding(4.dp))) {
+        Box(Modifier.padding(horizontal = 20.dp)) { BackBar("歌单广场", vm) }
+        LazyRow(state = tabs, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(square.tabs, key = { it.id }) { tag -> TabChip(tag.name, tag.id == square.tab.id) { vm.selectSquareTab(tag) } }
+            item(key = "all") { TabChip("全部", false, Glyph.Down) { picking = true; vm.loadSquareGroups() } }
+        }
+        LazyVerticalGrid(GridCells.Adaptive(96.dp), Modifier.weight(1f), state = grid,
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottomPadding),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            items(square.playlists, key = { it.id }) { playlist ->
+                PlaylistCard(playlist, Modifier.fillMaxWidth(), titled = true, compact = true) { vm.openPlaylist(playlist) }
+            }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                when {
+                    square.error != null -> EmptyState(if (square.playlists.isEmpty()) "歌单加载失败" else "没能继续加载", square.error,
+                        Glyph.Alert, "重试", onAction = vm::retrySquare)
+                    square.loading || square.next != null -> LoadingState()
+                    square.playlists.isEmpty() -> EmptyState("暂无歌单")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: (Song) -> Unit) {
     val player by vm.player.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.loadHotSearches() }
     val focus = LocalFocusManager.current
+    var clearingHistory by remember { mutableStateOf(false) }
+    if (clearingHistory) LiltDialog("清空搜索记录？", "清空", onDismiss = { clearingHistory = false },
+        onConfirm = { clearingHistory = false; vm.clearSearchHistory() }, destructive = true)
     Column(Modifier.fillMaxSize().padding(top = topPadding(8.dp))) {
         val fieldShape = CircleShape
         Row(Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(52.dp).softShadow(fieldShape, 4.dp).clip(fieldShape)
@@ -422,16 +523,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
         }
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SearchTabs.forEach { (label, type) ->
-                val selected = state.searchType == type
-                Box(Modifier.height(33.dp).clip(CircleShape)
-                    .background(if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface)
-                    .quietClickable(role = Role.Tab) { vm.search(type = type) }.padding(horizontal = 14.dp),
-                    contentAlignment = Alignment.Center) {
-                    Text(label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface)
-                }
-            }
+            SearchTabs.forEach { (label, type) -> TabChip(label, state.searchType == type) { vm.search(type = type) } }
         }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottomPadding),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -441,7 +533,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("最近搜索", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                                IconAction(Glyph.Trash, "清空搜索记录", tint = MaterialTheme.colorScheme.onSurfaceVariant, onClick = vm::clearSearchHistory)
+                                IconAction(Glyph.Trash, "清空搜索记录", tint = MaterialTheme.colorScheme.onSurfaceVariant, onClick = { clearingHistory = true })
                             }
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 state.searchHistory.forEach { query ->
@@ -454,22 +546,7 @@ fun SearchScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore: 
                             Spacer(Modifier.height(12.dp))
                         }
                     }
-                    item {
-                        Column {
-                            SectionTitle("听点什么")
-                            listOf("周杰伦", "王菲", "陈奕迅", "纯音乐", "华语经典", "睡前轻音乐").forEachIndexed { index, query ->
-                                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).quietClickable { vm.search(query) }.padding(vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically) {
-                                    Text("%02d".format(index + 1), Modifier.width(36.dp),
-                                        color = if (index < 3) MaterialTheme.colorScheme.primary else MaterialTheme.lilt.textTertiary,
-                                        style = MaterialTheme.typography.labelLarge)
-                                    Text(query, style = MaterialTheme.typography.bodyLarge)
-                                    Spacer(Modifier.weight(1f))
-                                    AppIcon(Glyph.Search, Modifier.size(18.dp), MaterialTheme.lilt.textTertiary)
-                                }
-                            }
-                        }
-                    }
+                    if (state.hotSearches.isNotEmpty()) item { HotSearches(state.hotSearches.take(10)) { vm.search(it) } }
                 }
                 state.searching -> item { LoadingState() }
                 state.searchError != null -> item {
@@ -518,8 +595,8 @@ private fun ArtistCard(artist: Artist, onOpen: () -> Unit, onPlay: () -> Unit) {
         }
         Box(Modifier.size(48.dp).clip(CircleShape).quietClickable(role = Role.Button, onClick = onPlay)
             .semantics { contentDescription = "播放${artist.name}的热门歌曲" }, contentAlignment = Alignment.Center) {
-            Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
-                TransportIcon(Transport.Play, Modifier.size(22.dp).offset(x = 1.dp), MaterialTheme.colorScheme.onPrimary)
+            Box(Modifier.size(44.dp).background(MaterialTheme.lilt.accent, CircleShape), contentAlignment = Alignment.Center) {
+                TransportIcon(Transport.Play, Modifier.size(22.dp).offset(x = 1.dp), MaterialTheme.lilt.onAccent)
             }
         }
     }
@@ -617,12 +694,12 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                     Spacer(Modifier.height(24.dp))
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).alpha(heroAlpha), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         val enabled = detail.songs.isNotEmpty() && !selecting
-                        Row(Modifier.weight(1f).height(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = if (detail.songs.isNotEmpty()) 1f else .5f))
+                        Row(Modifier.weight(1f).height(48.dp).clip(CircleShape).background(MaterialTheme.lilt.accent.copy(alpha = if (detail.songs.isNotEmpty()) 1f else .5f))
                             .quietClickable(enabled, role = Role.Button) { vm.play(detail.songs) },
                             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                            TransportIcon(Transport.Play, Modifier.size(20.dp), MaterialTheme.colorScheme.onPrimary)
+                            TransportIcon(Transport.Play, Modifier.size(20.dp), MaterialTheme.lilt.onAccent)
                             Spacer(Modifier.width(8.dp))
-                            Text("播放全部", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimary)
+                            Text("播放全部", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.lilt.onAccent)
                         }
                         Row(Modifier.weight(1f).height(48.dp).softShadow(CircleShape, 4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface)
                             .quietClickable(enabled, role = Role.Button) { vm.play(detail.songs, shuffle = true) },
