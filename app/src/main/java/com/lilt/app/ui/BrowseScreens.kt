@@ -8,6 +8,10 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -70,12 +74,9 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         val greeting = when (LocalTime.now().hour) { in 5..10 -> "早上好"; in 11..13 -> "中午好"; in 14..18 -> "下午好"; else -> "晚上好" }
-                        Text(greeting + (profile?.name?.let { "，$it" } ?: ""), style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("推荐", style = MaterialTheme.typography.headlineMedium)
-                            if (state.preview) Text("设计预览", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                        Text(greeting + (profile?.name?.let { "，$it" } ?: ""), style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (state.preview) Text("设计预览", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Box(Modifier.size(48.dp).clip(CircleShape).quietClickable { vm.navigate(if (profile == null) Destination.Login else Destination.Library) }
                         .semantics { contentDescription = "我的账号" }, contentAlignment = Alignment.Center) {
@@ -96,7 +97,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                                 .quietClickable {
                                     when (i) {
                                         0 -> lucky?.songs?.let { vm.play(it, shuffle = true, source = "猜你想听"); vm.showPlayer(true) } ?: vm.refreshHome()
-                                        1 -> vm.openPlaylists("歌单广场", home.playlists)
+                                        1 -> vm.openPlaylists("歌单广场", home.playlists, CollectionLayout.Compact)
                                         2 -> vm.beginSearch(1)
                                         else -> home.charts.firstOrNull { it.title.contains("新歌") }?.let(vm::openPlaylist)
                                             ?: run { vm.notify("新歌榜暂不可用，请稍后重试"); vm.refreshHome() }
@@ -113,18 +114,18 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
             if (state.homeError != null) item(key = "error") {
                 EmptyState("暂时无法加载推荐", state.homeError, Glyph.Alert, "重试", onAction = vm::refreshHome)
             }
-            lucky?.let { shelf -> item(key = "lucky") { SongShelfSection(shelf, state, vm, player.current?.id, clover = shelf.title.contains("幸运")) } }
             if (home.playlists.isNotEmpty()) item(key = "playlists") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SectionTitle("为你推荐的歌单", "更多") { vm.openPlaylists("为你推荐的歌单", home.playlists) }
+                    SectionTitle("为你推荐的歌单", "更多") { vm.openPlaylists("为你推荐的歌单", home.playlists, CollectionLayout.Compact) }
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(home.playlists, key = { it.id }) { playlist -> PlaylistCard(playlist) { vm.openPlaylist(playlist) } }
                     }
                 }
             }
+            lucky?.let { shelf -> item(key = "lucky") { SongShelfSection(shelf, state, vm, player.current?.id, clover = shelf.title.contains("幸运")) } }
             if (home.charts.isNotEmpty()) item(key = "charts") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SectionTitle("排行榜", "全部") { vm.openPlaylists("排行榜", home.charts) }
+                    SectionTitle("排行榜", "全部") { vm.openPlaylists("排行榜", home.charts, CollectionLayout.Covers) }
                     GroupCard(radius = 20.dp, vertical = 6.dp) {
                         home.charts.take(3).forEachIndexed { index, chart ->
                             ChartRow(chart, index) { vm.openPlaylist(chart) }
@@ -264,8 +265,21 @@ private fun BackBar(title: String, vm: LiltViewModel, trailing: (@Composable () 
 
 @Composable
 fun PlaylistCollectionScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = topPadding(4.dp), bottom = bottomPadding),
-        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    val padding = PaddingValues(start = 20.dp, end = 20.dp, top = topPadding(4.dp), bottom = bottomPadding)
+    val layout = state.collectionLayout
+    if (layout != CollectionLayout.List) LazyVerticalGrid(
+        GridCells.Adaptive(if (layout == CollectionLayout.Compact) 96.dp else 150.dp), Modifier.fillMaxSize(), contentPadding = padding,
+        horizontalArrangement = Arrangement.spacedBy(if (layout == CollectionLayout.Compact) 12.dp else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item(span = { GridItemSpan(maxLineSpan) }) { BackBar(state.collectionTitle, vm) }
+        items(state.collectionPlaylists, key = { it.id }) { playlist ->
+            PlaylistCard(playlist, Modifier.fillMaxWidth(), titled = layout == CollectionLayout.Compact,
+                compact = layout == CollectionLayout.Compact) { vm.openPlaylist(playlist) }
+        }
+        if (state.collectionPlaylists.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+            EmptyState("暂无歌单", action = "返回") { vm.back() }
+        }
+    } else LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         item { Box(Modifier.padding(start = 0.dp, bottom = 8.dp)) { BackBar(state.collectionTitle, vm) } }
         items(state.collectionPlaylists, key = { it.id }) { playlist -> PlaylistListRow(playlist) { vm.openPlaylist(playlist) } }
         if (state.collectionPlaylists.isEmpty()) item { EmptyState("暂无歌单", action = "返回") { vm.back() } }
@@ -356,20 +370,24 @@ private fun AlbumRow(album: Album, onClick: () -> Unit) {
     }
 }
 
+/** Without [titled] the cover carries the name, as chart covers print it; it still names the card for accessibility. */
 @Composable
-fun PlaylistCard(playlist: Playlist, onClick: () -> Unit) {
-    Column(Modifier.width(132.dp).clip(RoundedCornerShape(16.dp)).quietClickable(onClick = onClick),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+fun PlaylistCard(playlist: Playlist, modifier: Modifier = Modifier.width(132.dp), titled: Boolean = true,
+                 compact: Boolean = false, onClick: () -> Unit) {
+    val radius = if (compact) 12.dp else 16.dp
+    Column(modifier.clip(RoundedCornerShape(radius)).quietClickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
         Box {
-            Artwork(playlist.cover, Modifier.size(132.dp), 16.dp)
-            if (playlist.playCount > 0) Row(Modifier.align(Alignment.TopEnd).padding(8.dp)
+            Artwork(playlist.cover, Modifier.fillMaxWidth().aspectRatio(1f), radius, playlist.title.takeUnless { titled })
+            if (playlist.playCount > 0) Row(Modifier.align(Alignment.TopEnd).padding(if (compact) 6.dp else 8.dp)
                 .background(Color.Black.copy(alpha = .35f), RoundedCornerShape(8.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 TransportIcon(Transport.Play, Modifier.size(9.dp), Color.White)
                 Text(formatCount(playlist.playCount), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Medium)
             }
         }
-        Text(playlist.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis,
+        if (titled) Text(playlist.title, style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+            maxLines = 2, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 2.dp))
     }
 }

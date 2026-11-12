@@ -5,6 +5,9 @@ package com.lilt.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.*
@@ -132,8 +135,23 @@ fun LiltApp(vm: LiltViewModel) {
                                 song.mid.startsWith("content:") || song.mid.startsWith("file:") || song.mid in state.cachedSongs },
                             LocalTopInset provides topInset,
                             LocalSongSelection provides SongSelectionContext(selection, availableIds)) {
-                            Box(Modifier.weight(1f)) {
-                                val page: @Composable () -> Unit = { when (state.destination) {
+                            val shift = with(LocalDensity.current) { PageShift.roundToPx() }
+                            // Quiet page changes: the old page fades away first, the new one settles in from a short distance.
+                            AnimatedContent(state.destination to state.navDepth, Modifier.weight(1f), transitionSpec = {
+                                val (from, fromDepth) = initialState
+                                val (to, toDepth) = targetState
+                                val tabs = from in TopLevel && to in TopLevel
+                                val enter = fadeIn(tween(220, delayMillis = 100, easing = LinearOutSlowInEasing))
+                                val exit = fadeOut(tween(100, easing = FastOutLinearInEasing))
+                                if (tabs) enter togetherWith exit
+                                else {
+                                    val sign = if (toDepth >= fromDepth) 1 else -1
+                                    (enter + slideInHorizontally(tween(320, easing = PageEasing)) { sign * shift }) togetherWith
+                                        (exit + slideOutHorizontally(tween(200, easing = PageEasing)) { -sign * shift / 2 })
+                                } using SizeTransform(clip = false)
+                            }, contentKey = { it.first }, label = "page") { (destination, _) ->
+                            Box(Modifier.fillMaxSize()) {
+                                val page: @Composable () -> Unit = { when (destination) {
                                     Destination.Home -> HomeScreen(state, profile, vm, bottomPadding, onMore)
                                     Destination.Search -> SearchScreen(state, vm, bottomPadding, onMore)
                                     Destination.Library -> LibraryScreen(state, profile, vm, bottomPadding)
@@ -145,9 +163,10 @@ fun LiltApp(vm: LiltViewModel) {
                                     Destination.Purchased -> PurchasedScreen(state, vm, bottomPadding, onMore)
                                     Destination.Local -> LocalScreen(state, vm, bottomPadding, onMore)
                                 } }
-                                if (state.destination == Destination.Home || state.destination == Destination.Search || state.destination == Destination.Library) {
-                                    tabStates.SaveableStateProvider(state.destination.name) { page() }
+                                if (destination in TopLevel) {
+                                    tabStates.SaveableStateProvider(destination.name) { page() }
                                 } else page()
+                            }
                             }
                         }
                     }
@@ -211,10 +230,11 @@ fun LiltApp(vm: LiltViewModel) {
             destructive = true, enabled = !state.batchBusy)
     }
     val dark = state.playerOpen
+    val backdrop = player.current?.artwork ?: vm.currentSong()?.cover.orEmpty()
     when (val current = menu) {
         is SongMenu.Actions -> {
             val song = current.song
-            SongSheet(song, fromPlayer = state.playerOpen, liked = song.mid in state.liked,
+            SongSheet(song, fromPlayer = state.playerOpen, backdrop = backdrop, liked = song.mid in state.liked,
                 qualityLabel = qualityLabel(state.quality), sleepLabel = sleepLabel(state.sleepAt),
                 onDismiss = { menu = null },
                 onPlayNext = { vm.playNext(song); menu = null },
@@ -242,10 +262,10 @@ fun LiltApp(vm: LiltViewModel) {
                 onSleep = { menu = SongMenu.Sleep },
                 onDelete = if (state.local.any { it.mid == song.mid }) ({ menu = SongMenu.Delete(song) }) else null)
         }
-        is SongMenu.Artists -> ArtistPickerSheet(current.song, dark, { menu = null }, { menu = SongMenu.Actions(current.song) }) {
+        is SongMenu.Artists -> ArtistPickerSheet(current.song, dark, backdrop, { menu = null }, { menu = SongMenu.Actions(current.song) }) {
             menu = null; vm.showPlayer(false); vm.openArtist(it)
         }
-        is SongMenu.AddTo -> PlaylistPickerSheet(state.library.filter { it.dirId in 1 until 200 }, dark, { menu = null },
+        is SongMenu.AddTo -> PlaylistPickerSheet(state.library.filter { it.dirId in 1 until 200 }, dark, backdrop, { menu = null },
             onCreate = { menu = SongMenu.Create(current.song) }) {
             vm.addToPlaylist(current.song, it); menu = null
         }
@@ -253,7 +273,7 @@ fun LiltApp(vm: LiltViewModel) {
             vm.createPlaylist(it, current.song); menu = null
         }
         is SongMenu.AddSelection -> PlaylistPickerSheet(state.library.filter { it.dirId in 1 until 200 || it.dirId == 201 },
-            dark, { menu = null }, onCreate = { menu = SongMenu.CreateSelection(current.songs) }) {
+            dark, backdrop, { menu = null }, onCreate = { menu = SongMenu.CreateSelection(current.songs) }) {
             vm.addSongsToPlaylist(current.songs, it); menu = null
         }
         is SongMenu.CreateSelection -> PlaylistNameDialog("新建歌单", "创建", onDismiss = { menu = null }) {
@@ -263,15 +283,19 @@ fun LiltApp(vm: LiltViewModel) {
             onConfirm = { menu = null; vm.deleteLocal(current.song) }, destructive = true) {
             Text("歌词和封面会一并删除")
         }
-        SongMenu.Quality -> ChoiceSheet("在线播放音质", QualityOptions, state.quality, { menu = null }, dark) {
+        SongMenu.Quality -> ChoiceSheet("在线播放音质", QualityOptions, state.quality, { menu = null }, dark, backdrop) {
             vm.setQuality(it); menu = null; vm.notify("将在下一首歌曲生效")
         }
-        SongMenu.Sleep -> ChoiceSheet("睡眠定时", SleepOptions, "", { menu = null }, dark) {
+        SongMenu.Sleep -> ChoiceSheet("睡眠定时", SleepOptions, "", { menu = null }, dark, backdrop) {
             vm.setSleepTimer(it.toInt()); menu = null
         }
         null -> Unit
     }
 }
+
+private val TopLevel = setOf(Destination.Home, Destination.Search, Destination.Library)
+private val PageShift = 24.dp
+private val PageEasing = CubicBezierEasing(.2f, 0f, 0f, 1f)
 
 private val SleepOptions = listOf("0" to "关闭", "15" to "15 分钟", "30" to "30 分钟", "45" to "45 分钟", "60" to "60 分钟", "90" to "90 分钟")
 

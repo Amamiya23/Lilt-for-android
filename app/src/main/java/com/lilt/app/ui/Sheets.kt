@@ -10,10 +10,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -23,18 +25,19 @@ import androidx.compose.ui.unit.sp
 import com.lilt.app.data.Artist
 import com.lilt.app.data.Playlist
 import com.lilt.app.data.Song
+import com.lilt.app.ui.theme.Radix
 import com.lilt.app.ui.theme.lilt
 
-/** The two looks of a sheet: dark glass over the player, the app's own surfaces elsewhere. */
+/** The two looks of a sheet: a deeper layer of the player over the player, the app's own surfaces elsewhere. */
 @Immutable
 data class SheetColors(val container: Color, val content: Color, val secondary: Color, val tile: Color,
                        val divider: Color, val chevron: Color, val handle: Color, val scrim: Color)
 
 @Composable
 fun sheetColors(dark: Boolean): SheetColors = if (dark) SheetColors(
-    container = com.lilt.app.ui.theme.Radix.SlateDark3, content = Color.White, secondary = Color.White.copy(alpha = .6f),
-    tile = Color.White.copy(alpha = .07f), divider = Color.White.copy(alpha = .07f), chevron = Color.White.copy(alpha = .35f),
-    handle = Color.White.copy(alpha = .3f), scrim = Color.Black.copy(alpha = .42f),
+    container = Radix.PlayerShade, content = Color.White, secondary = Color.White.copy(alpha = .6f),
+    tile = Color.White.copy(alpha = .08f), divider = Color.White.copy(alpha = .07f), chevron = Color.White.copy(alpha = .35f),
+    handle = Color.White.copy(alpha = .3f), scrim = Color.Black.copy(alpha = .24f),
 ) else SheetColors(
     container = MaterialTheme.colorScheme.background, content = MaterialTheme.colorScheme.onSurface,
     secondary = MaterialTheme.colorScheme.onSurfaceVariant, tile = MaterialTheme.colorScheme.surface,
@@ -43,14 +46,25 @@ fun sheetColors(dark: Boolean): SheetColors = if (dark) SheetColors(
 )
 
 @Composable
-fun LiltSheet(onDismiss: () -> Unit, dark: Boolean, content: @Composable ColumnScope.(SheetColors) -> Unit) {
+fun LiltSheet(onDismiss: () -> Unit, dark: Boolean, backdrop: String = "", content: @Composable ColumnScope.(SheetColors) -> Unit) {
     val colors = sheetColors(dark)
+    // The handle is drawn in the content so the backdrop reaches the sheet's top edge.
     ModalBottomSheet(onDismiss, containerColor = colors.container, contentColor = colors.content, scrimColor = colors.scrim,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).size(36.dp, 4.dp).background(colors.handle, CircleShape)) }) {
-        CompositionLocalProvider(LocalContentColor provides colors.content) {
-            Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)) { content(colors) }
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp), dragHandle = null) {
+        Box {
+            // Over the player the sheet repeats its blurred cover under a deeper shade, so it keeps the song's colour.
+            if (dark && backdrop.isNotBlank()) {
+                coil.compose.AsyncImage(backdrop, null, Modifier.matchParentSize().blur(90.dp), contentScale = ContentScale.Crop)
+                Box(Modifier.matchParentSize().background(Radix.PlayerShade.copy(alpha = .78f)))
+            }
+            Column(Modifier.fillMaxWidth()) {
+                Box(Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp, bottom = 6.dp)
+                    .size(36.dp, 4.dp).background(colors.handle, CircleShape))
+                CompositionLocalProvider(LocalContentColor provides colors.content) {
+                    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)) { content(colors) }
+                }
+            }
         }
     }
 }
@@ -81,11 +95,11 @@ private data class SheetTile(val glyph: Glyph, val label: String, val onClick: (
 
 /** A song's actions. On the player it adds playback quality and the sleep timer; liking lives on the player itself. */
 @Composable
-fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: String, sleepLabel: String,
+fun SongSheet(song: Song, fromPlayer: Boolean, backdrop: String, liked: Boolean, qualityLabel: String, sleepLabel: String,
               onDismiss: () -> Unit, onPlayNext: () -> Unit, onAddToPlaylist: () -> Unit, onDownload: () -> Unit,
               onArtist: () -> Unit, onAlbum: (() -> Unit)?, onLike: () -> Unit,
               onQuality: () -> Unit, onSleep: () -> Unit, onDelete: (() -> Unit)? = null) {
-    LiltSheet(onDismiss, dark = fromPlayer) { colors ->
+    LiltSheet(onDismiss, dark = fromPlayer, backdrop) { colors ->
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
             modifier = Modifier.padding(horizontal = 4.dp)) {
             Artwork(song.cover, Modifier.size(52.dp), 10.dp)
@@ -126,8 +140,8 @@ fun SongSheet(song: Song, fromPlayer: Boolean, liked: Boolean, qualityLabel: Str
 
 /** A song with several credited artists asks which one to open. */
 @Composable
-fun ArtistPickerSheet(song: Song, dark: Boolean, onDismiss: () -> Unit, onBack: () -> Unit, onArtist: (Artist) -> Unit) {
-    LiltSheet(onDismiss, dark) { colors ->
+fun ArtistPickerSheet(song: Song, dark: Boolean, backdrop: String, onDismiss: () -> Unit, onBack: () -> Unit, onArtist: (Artist) -> Unit) {
+    LiltSheet(onDismiss, dark, backdrop) { colors ->
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             CircleAction(Glyph.Back, "返回", colors.tile.copy(alpha = if (dark) .14f else 1f), size = 36.dp, onClick = onBack)
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -164,8 +178,8 @@ fun PlaylistNameDialog(title: String, confirm: String, initial: String = "", onD
 }
 
 @Composable
-fun PlaylistPickerSheet(playlists: List<Playlist>, dark: Boolean, onDismiss: () -> Unit, onCreate: () -> Unit, onPick: (Playlist) -> Unit) {
-    LiltSheet(onDismiss, dark) { colors ->
+fun PlaylistPickerSheet(playlists: List<Playlist>, dark: Boolean, backdrop: String, onDismiss: () -> Unit, onCreate: () -> Unit, onPick: (Playlist) -> Unit) {
+    LiltSheet(onDismiss, dark, backdrop) { colors ->
         Text("添加到歌单", fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp))
         Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(RoundedCornerShape(18.dp)).background(colors.tile)
             .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -194,8 +208,8 @@ fun PlaylistPickerSheet(playlists: List<Playlist>, dark: Boolean, onDismiss: () 
 
 @Composable
 fun ChoiceSheet(title: String, options: List<Pair<String, String>>, selected: String,
-                onDismiss: () -> Unit, dark: Boolean = false, onSelect: (String) -> Unit) {
-    LiltSheet(onDismiss, dark) { colors ->
+                onDismiss: () -> Unit, dark: Boolean = false, backdrop: String = "", onSelect: (String) -> Unit) {
+    LiltSheet(onDismiss, dark, backdrop) { colors ->
         Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp))
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(colors.tile).padding(horizontal = 16.dp, vertical = 2.dp)) {
             options.forEachIndexed { index, (id, label) ->

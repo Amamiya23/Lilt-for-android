@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.*
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Charts print their names on their covers; recommendations browse densely; a user's own collections stay a list. */
+enum class CollectionLayout { List, Covers, Compact }
 enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Purchased, Local }
 enum class PlayerPanel { Artwork, Lyrics, Queue }
 enum class PurchasedTab(val label: String) { Albums("专辑"), Songs("单曲") }
@@ -27,6 +29,8 @@ enum class PurchasedTab(val label: String) { Albums("专辑"), Songs("单曲") }
 data class AppState(
     val destination: Destination = Destination.Home,
     val topLevel: Destination = Destination.Home,
+    /** How many pages sit beneath [destination], so page transitions know forward from back. */
+    val navDepth: Int = 0,
     val home: HomeFeed = HomeFeed(),
     val homeLoading: Boolean = true,
     val homeRefreshing: Boolean = false,
@@ -43,6 +47,7 @@ data class AppState(
     val detailError: String? = null,
     val collectionTitle: String = "",
     val collectionPlaylists: List<Playlist> = emptyList(),
+    val collectionLayout: CollectionLayout = CollectionLayout.List,
     val library: List<Playlist> = emptyList(),
     val libraryLoading: Boolean = false,
     val libraryError: String? = null,
@@ -199,7 +204,7 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
                 if (!state.value.preview) {
                     if (previousAccount != null && previousAccount != account) {
                         detailStack.clear(); backStack.clear()
-                        mutable.update { it.copy(destination = it.topLevel) }
+                        mutable.update { it.copy(destination = it.topLevel, navDepth = 0) }
                     }
                     previousAccount = account
                     homeRefreshInterrupted = false
@@ -289,7 +294,7 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
             if (destination != Destination.Home) backStack.add(Destination.Home)
         } else backStack.add(current)
         if (current == Destination.Login) cancelQr()
-        mutable.update { it.copy(destination = destination,
+        mutable.update { it.copy(destination = destination, navDepth = backStack.size,
             topLevel = if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) destination else it.topLevel) }
     }
     fun back() {
@@ -305,7 +310,7 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
                 }
                 return
             }
-            mutable.update { it.copy(destination = destination,
+            mutable.update { it.copy(destination = destination, navDepth = backStack.size,
                 topLevel = if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) destination else it.topLevel) }
             when (destination) {
                 Destination.Playlist -> refreshVisibleDetail()
@@ -461,9 +466,9 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
             detail = PlaylistDetail(Playlist(id, title, songs.firstOrNull()?.cover.orEmpty(), trackCount = songs.size), songs),
             detailLoading = false, detailError = null) }
     }
-    fun openPlaylists(title: String, playlists: List<Playlist>) {
+    fun openPlaylists(title: String, playlists: List<Playlist>, layout: CollectionLayout = CollectionLayout.List) {
         go(Destination.Playlists)
-        mutable.update { it.copy(collectionTitle = title, collectionPlaylists = playlists) }
+        mutable.update { it.copy(collectionTitle = title, collectionPlaylists = playlists, collectionLayout = layout) }
     }
     fun daily(refresh: Boolean = false) {
         if (profile.value == null && !state.value.preview) navigate(Destination.Login)

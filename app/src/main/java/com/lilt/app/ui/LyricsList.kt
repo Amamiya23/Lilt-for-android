@@ -1,20 +1,27 @@
 package com.lilt.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -98,11 +105,27 @@ internal fun LyricsList(
                     }
                 }
             }
-            if (!following) Button(onClick = { seekTarget = null; following = true },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 4.dp, bottom = 8.dp).heightIn(min = 48.dp),
-                shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(
-                    containerColor = Radix.SlateDark3, contentColor = Radix.SlateDark12)) {
-                Text("回到当前")
+            // The arrow points to where the sung line sits relative to the reading anchor.
+            val above by remember(target, anchorPx) {
+                derivedStateOf {
+                    val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }
+                    if (item != null) item.offset < anchorPx else target < listState.firstVisibleItemIndex
+                }
+            }
+            AnimatedVisibility(!following, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                enter = fadeIn(tween(200)) + slideInVertically(tween(240)) { it / 2 },
+                exit = fadeOut(tween(160)) + slideOutVertically(tween(200)) { it / 2 }) {
+                val source = remember { MutableInteractionSource() }
+                Box(Modifier.heightIn(min = 48.dp).pressFeedback(source)
+                    .quietClickable(role = Role.Button, interactionSource = source) { seekTarget = null; following = true },
+                    contentAlignment = Alignment.Center) {
+                    Row(Modifier.height(40.dp).clip(CircleShape).background(Radix.White)
+                        .padding(start = 14.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AppIcon(Glyph.Up, Modifier.size(16.dp).rotate(if (above) 0f else 180f), Radix.Ink)
+                        Text("回到当前", color = Radix.Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
     }

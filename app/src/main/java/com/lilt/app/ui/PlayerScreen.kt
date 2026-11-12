@@ -146,7 +146,7 @@ fun PlayerScreen(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, o
             }
         }
     }
-    if (showQuality) ChoiceSheet("在线播放音质", QualityOptions, state.quality, { showQuality = false }, dark = true) {
+    if (showQuality) ChoiceSheet("在线播放音质", QualityOptions, state.quality, { showQuality = false }, dark = true, backdrop = cover) {
         vm.setQuality(it); showQuality = false; vm.notify("将在下一首歌曲生效")
     }
 }

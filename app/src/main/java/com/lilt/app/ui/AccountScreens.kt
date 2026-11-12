@@ -74,7 +74,6 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (profile == null) Text("让喜欢的音乐，随身同行", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    else MembershipLine(state.membership, profile)
                 }
             }
         }
@@ -125,19 +124,32 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
     }
 }
 
-/** 绿钻会员 · 2027.03.18 到期, from the account's membership query. */
+private val Membership?.paid get() = this?.tier == VipTier.Green || this?.tier == VipTier.Super
+
+/** The signed-in account's actions: when membership ends, sign in as someone else, or sign out. */
 @Composable
-private fun MembershipLine(membership: Membership?, profile: Profile) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val paid = membership?.tier == VipTier.Green || membership?.tier == VipTier.Super
-        if (paid) Text(membership!!.tier.label, Modifier.background(Brush.horizontalGradient(listOf(Radix.VipStart, Radix.VipEnd)),
-            RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 2.dp), fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-            color = Color.White)
-        Text(when {
-            paid && membership!!.expiry.isNotBlank() -> "${membership.expiry.replace('-', '.')} 到期"
-            membership?.tier == VipTier.Free -> "${profile.loginLabel} · 免费账号"
-            else -> profile.loginLabel.ifBlank { "QQ 音乐账号" }
-        }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun AccountSheet(membership: Membership?, onDismiss: () -> Unit, onSwitch: () -> Unit, onLogout: () -> Unit) {
+    LiltSheet(onDismiss, dark = false) { colors ->
+        SheetGroup(colors) {
+            if (membership.paid && membership!!.expiry.isNotBlank()) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 50.dp), verticalAlignment = Alignment.CenterVertically) {
+                    AppIcon(Glyph.Clock, Modifier.size(21.dp), colors.content.copy(alpha = .8f))
+                    Spacer(Modifier.width(14.dp))
+                    Text("会员到期", Modifier.weight(1f), fontSize = 15.sp)
+                    Text(membership.expiry.replace('-', '.'), fontSize = 13.sp, color = colors.secondary)
+                }
+                HorizontalDivider(thickness = 1.dp, color = colors.divider)
+            }
+            SheetRow(colors, Glyph.User, "切换账号", onClick = onSwitch)
+        }
+        SheetGroup(colors) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 50.dp).quietClickable(role = Role.Button, onClick = onLogout),
+                verticalAlignment = Alignment.CenterVertically) {
+                AppIcon(Glyph.Logout, Modifier.size(21.dp), MaterialTheme.colorScheme.error)
+                Spacer(Modifier.width(14.dp))
+                Text("退出登录", fontSize = 15.sp, color = MaterialTheme.colorScheme.error)
+            }
+        }
     }
 }
 
@@ -187,7 +199,9 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             Text("设置", style = MaterialTheme.typography.headlineLarge)
         }
         GroupCard(vertical = 0.dp) {
-            Row(Modifier.fillMaxWidth().quietClickable { vm.navigate(Destination.Login) }.padding(vertical = 16.dp),
+            // Signed in, the card opens the account's own actions; signed out, it goes straight to sign-in.
+            Row(Modifier.fillMaxWidth().quietClickable { if (profile == null) vm.navigate(Destination.Login) else choice = "account" }
+                .padding(vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Artwork(profile?.avatar, Modifier.size(48.dp), 24.dp)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -227,15 +241,12 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             RowDivider()
             SettingRow(Glyph.Music, "当前版本", "v${BuildConfig.VERSION_NAME}")
         }
-        if (profile != null) {
-            val shape = RoundedCornerShape(22.dp)
-            Box(Modifier.fillMaxWidth().height(52.dp).softShadow(shape).clip(shape).background(MaterialTheme.colorScheme.surface)
-                .quietClickable(role = Role.Button, onClick = vm::logout), contentAlignment = Alignment.Center) {
-                Text("退出登录", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
-            }
-        }
     }
     when (choice) {
+        "account" -> if (profile != null) AccountSheet(state.membership, onDismiss = { choice = null },
+            onSwitch = { choice = null; vm.navigate(Destination.Login) }, onLogout = { choice = "logout" })
+        "logout" -> LiltDialog("退出登录？", "退出", onDismiss = { choice = null },
+            onConfirm = { choice = null; vm.logout() }, destructive = true)
         "clear-cache" -> LiltDialog("清除缓存？", "清除", onDismiss = { choice = null }, onConfirm = {
             choice = null
             vm.clearCaches { context.imageLoader.memoryCache?.clear(); context.imageLoader.diskCache?.clear() }
@@ -375,9 +386,6 @@ fun LoginScreen(state: AppState, vm: LiltViewModel) {
                             if (state.qrState == LoginState.EXPIRED) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = .9f))
                                 .quietClickable { vm.refreshQr() }, contentAlignment = Alignment.Center) {
                                 Text("点按刷新", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Radix.Slate12)
-                            } else Box(Modifier.size(32.dp).background(Color.White, RoundedCornerShape(9.dp)).padding(3.dp)
-                                .background(primary, RoundedCornerShape(7.dp)), contentAlignment = Alignment.Center) {
-                                AppIcon(Glyph.Music, Modifier.size(16.dp), Color.White)
                             }
                         }
                         else -> AppIcon(Glyph.Qr, Modifier.size(64.dp), Radix.Slate11)
