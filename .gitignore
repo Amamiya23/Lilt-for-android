@@ -21,3 +21,5 @@ build-check.log
 account-*-check.log
 navigation-device-check.log
 **/__pycache__/
+.github/
+.cursor/
