@@ -24,6 +24,8 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
@@ -33,6 +35,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -575,9 +578,10 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                         if (editable) PlaylistMenu(playlist, onRename = { vm.renamePlaylist(playlist, it) },
                             onDelete = { vm.deletePlaylist(playlist) })
                     }
-                    Artwork(playlist.cover, Modifier.size(188.dp).shadow(18.dp, RoundedCornerShape(if (round) 94.dp else 20.dp),
-                        ambientColor = Radix.SlateDark1.copy(alpha = .25f), spotColor = Radix.SlateDark1.copy(alpha = .25f)),
-                        if (round) 94.dp else 20.dp, playlist.title)
+                    val artworkModifier = Modifier.size(188.dp).shadow(18.dp, RoundedCornerShape(if (round) 94.dp else 20.dp),
+                        ambientColor = Radix.SlateDark1.copy(alpha = .25f), spotColor = Radix.SlateDark1.copy(alpha = .25f))
+                    if (playlist.id == "daily") DailyArtwork(playlist.cover, artworkModifier)
+                    else Artwork(playlist.cover, artworkModifier, if (round) 94.dp else 20.dp, playlist.title)
                     Spacer(Modifier.height(20.dp))
                     Text(playlist.title, Modifier.padding(horizontal = 12.dp), fontSize = 20.sp, lineHeight = 28.sp,
                         fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
@@ -617,5 +621,25 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                 height = if (playlist.id.startsWith("album:")) 60.dp else 68.dp)
         }
         if (!state.detailLoading && state.detailError == null && detail.songs.isEmpty()) item { EmptyState("这里还没有歌曲") }
+    }
+}
+
+@Composable
+private fun DailyArtwork(cover: String, modifier: Modifier = Modifier) {
+    val today = LocalDate.now()
+    Box(modifier.clip(RoundedCornerShape(13.dp)).background(Radix.SageDark6)) {
+        if (cover.isNotBlank()) {
+            val saturation = remember { ColorMatrix().apply { setToSaturation(1.5f) } }
+            coil.compose.AsyncImage(cover, null, Modifier.fillMaxSize().blur(35.dp),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop, colorFilter = ColorFilter.colorMatrix(saturation))
+        }
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
+            0.35f to Color.Transparent, 1f to Radix.Black.copy(alpha = .4f))))
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 17.dp, bottom = 15.dp)) {
+            Text(today.dayOfMonth.toString(), fontSize = 83.sp, lineHeight = 83.sp, letterSpacing = (-3.8).sp,
+                fontWeight = FontWeight.Light, color = Radix.White, style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)))
+            Text(today.format(DateTimeFormatter.ofPattern("M月 · EEEE", Locale.SIMPLIFIED_CHINESE)),
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Radix.White.copy(alpha = .85f))
+        }
     }
 }

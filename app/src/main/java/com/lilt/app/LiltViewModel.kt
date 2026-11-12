@@ -341,11 +341,11 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-    fun openSongs(title: String, songs: List<Song>) {
+    fun openSongs(title: String, songs: List<Song>, id: String = "local-list") {
         go(Destination.Playlist)
         songBook.putAll(songs.associateBy { it.mid })
         mutable.update { it.copy(destination = Destination.Playlist,
-            detail = PlaylistDetail(Playlist("local-list", title, songs.firstOrNull()?.cover.orEmpty(), trackCount = songs.size), songs),
+            detail = PlaylistDetail(Playlist(id, title, songs.firstOrNull()?.cover.orEmpty(), trackCount = songs.size), songs),
             detailLoading = false, detailError = null) }
     }
     fun openPlaylists(title: String, playlists: List<Playlist>) {
@@ -354,7 +354,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun daily() {
         if (profile.value == null && !state.value.preview) navigate(Destination.Login)
-        else if (state.value.preview) openSongs("每日推荐", state.value.home.songs)
+        else if (state.value.preview) openSongs("每日推荐", state.value.home.songs, id = "daily")
         else {
             go(Destination.Playlist)
             mutable.update { it.copy(destination = Destination.Playlist,
@@ -364,7 +364,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     val songs = repository.dailySongs()
                     songBook.putAll(songs.associateBy { it.mid })
-                    mutable.update { it.copy(detail = PlaylistDetail(Playlist("local-list", "每日推荐",
+                    mutable.update { it.copy(detail = PlaylistDetail(Playlist("daily", "每日推荐",
                         songs.firstOrNull()?.cover.orEmpty(), trackCount = songs.size), songs), detailLoading = false) }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error

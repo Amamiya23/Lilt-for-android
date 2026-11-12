@@ -29,6 +29,7 @@ object Radix {
     val SlateDark8 = Color(0xFF5A6169)
     val SlateDark11 = Color(0xFFB0B4BA)
     val SlateDark12 = Color(0xFFEDEEF0)
+    val SageDark6 = Color(0xFF343B39)
     val Green3 = Color(0xFFE6F6EB)
     val Green9 = Color(0xFF30A46C)
     val Green11 = Color(0xFF218358)
