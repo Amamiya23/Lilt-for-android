@@ -32,6 +32,10 @@ import com.lilt.app.*
 import com.lilt.app.data.*
 import com.lilt.app.playback.PlaybackSnapshot
 import com.lilt.app.ui.theme.lilt
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 
 private val Tabs = listOf(
     Triple(Destination.Home, Glyph.Home, "首页"),
@@ -61,6 +65,7 @@ fun LiltApp(vm: LiltViewModel) {
     val profile by vm.profile.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val tabStates = rememberSaveableStateHolder()
+    val hazeState = remember { HazeState() }
     var menu by remember { mutableStateOf<SongMenu?>(null) }
     val selectableSongs = songsForSelection(state)
     val availableIds = selectableSongs.map { it.mid }.toSet()
@@ -81,7 +86,8 @@ fun LiltApp(vm: LiltViewModel) {
     BackHandler(state.playerOpen || state.destination != Destination.Home) { vm.back() }
     BackHandler(selection.active && !state.playerOpen) { selection.clear() }
     val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val selectionBottomPadding = 73.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // The floating selection actions: a 68dp card on a 12dp margin, above the navigation bar inset.
+    val selectionBarHeight = 80.dp
     val onMore: (Song) -> Unit = { vm.refreshSongLike(it); menu = SongMenu.Actions(it) }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -107,13 +113,15 @@ fun LiltApp(vm: LiltViewModel) {
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxHeight()) {
-                    val bottomPadding = if (selection.active) 16.dp else if (standalone) 24.dp else if (expanded) (if (showMini) 104.dp else 32.dp)
+                    val chromePadding = if (standalone) 24.dp else if (expanded) (if (showMini) 104.dp else 32.dp)
                         else if (showMini) 168.dp else 100.dp
-                    Column(Modifier.widthIn(max = if (expanded) 880.dp else 700.dp).fillMaxSize().align(Alignment.TopCenter)) {
-                        if (selection.active) SongSelectionHeader(selection, availableIds, state.batchBusy,
-                            Modifier.padding(top = topInset))
+                    // Only ever grow the padding while selecting: shrinking it would re-clamp a list scrolled to its end.
+                    val bottomPadding = if (selection.active) maxOf(chromePadding, selectionBarHeight + 8.dp +
+                        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()) else chromePadding
+                    Column(Modifier.widthIn(max = if (expanded) 880.dp else 700.dp).fillMaxSize().align(Alignment.TopCenter)
+                        .hazeSource(hazeState).background(MaterialTheme.colorScheme.background)) {
                         CompositionLocalProvider(
-                            LocalTopInset provides if (selection.active) 0.dp else topInset,
+                            LocalTopInset provides topInset,
                             LocalSongSelection provides SongSelectionContext(selection, availableIds)) {
                             Box(Modifier.weight(1f)) {
                                 val page: @Composable () -> Unit = { when (state.destination) {
@@ -133,31 +141,45 @@ fun LiltApp(vm: LiltViewModel) {
                                 } else page()
                             }
                         }
-                        if (selection.active) SongSelectionActions(selection, selectableSongs, removableIds,
-                            state.batchBusy, onAddTo = { songs ->
+                    }
+                    // Pages scroll under the status bar; the design covers it with glass.
+                    if (!selection.active && state.destination != Destination.Login && state.destination != Destination.Playlist) Box(Modifier.fillMaxWidth().height(topInset)
+                        .background(MaterialTheme.lilt.glass.copy(alpha = .985f)))
+                    val chromeWidth = if (expanded) Modifier.widthIn(max = 760.dp).padding(horizontal = 24.dp) else Modifier
+                    // Selection swaps the page header and bottom chrome for its own floating bars; none takes layout space.
+                    androidx.compose.animation.AnimatedVisibility(selection.active, Modifier.align(Alignment.TopCenter),
+                        enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { -it / 3 },
+                        exit = fadeOut(tween(120)) + slideOutVertically(tween(180)) { -it / 3 }) {
+                        SongSelectionHeader(selection, availableIds, state.batchBusy, topInset, hazeState)
+                    }
+                    androidx.compose.animation.AnimatedVisibility(!selection.active && !standalone, Modifier.align(Alignment.BottomCenter),
+                        enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 4 },
+                        exit = fadeOut(tween(120)) + slideOutVertically(tween(180)) { it / 4 }) {
+                        Column(chromeWidth.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (showMini) MiniPlayer(player, vm.currentSong(), state.preview, hazeState,
+                                Modifier.padding(horizontal = 12.dp), { vm.showPlayer(true) }, vm.playback::toggle, vm.playback::next)
+                            if (!expanded) BottomNavigation(state.topLevel, hazeState, vm::navigate)
+                            else Spacer(Modifier.navigationBarsPadding().height(16.dp))
+                        }
+                    }
+                    androidx.compose.animation.AnimatedVisibility(selection.active, Modifier.align(Alignment.BottomCenter),
+                        enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 3 },
+                        exit = fadeOut(tween(120)) + slideOutVertically(tween(180)) { it / 3 }) {
+                        SongSelectionActions(selection, selectableSongs, removableIds, state.batchBusy,
+                            onAddTo = { songs ->
                                 if (profile == null && !state.preview) vm.navigate(Destination.Login)
                                 else menu = SongMenu.AddSelection(songs)
                             }, onDownload = vm::downloadSongs, onRemove = { songs ->
                                 if (editablePlaylist != null) removeSelection = editablePlaylist to songs
                                 else deleteSelection = songs
-                            })
-                    }
-                    // Pages scroll under the status bar; the design covers it with glass.
-                    if (state.destination != Destination.Login && state.destination != Destination.Playlist) Box(Modifier.fillMaxWidth().height(topInset)
-                        .background(MaterialTheme.lilt.glass.copy(alpha = .985f)))
-                    if (!selection.active && !standalone) Column(Modifier.align(Alignment.BottomCenter)
-                        .then(if (expanded) Modifier.widthIn(max = 760.dp).padding(horizontal = 24.dp) else Modifier).fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (showMini) MiniPlayer(player, vm.currentSong(), state.preview,
-                            Modifier.padding(horizontal = 12.dp), { vm.showPlayer(true) }, vm.playback::toggle, vm.playback::next)
-                        if (!expanded) BottomNavigation(state.topLevel, vm::navigate)
-                        else Spacer(Modifier.navigationBarsPadding().height(16.dp))
+                            }, hazeState = hazeState, modifier = chromeWidth.navigationBarsPadding().padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
                     }
                 }
             }
             PlayerOverlay(state, player, vm, onMore)
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
-                .padding(bottom = if (state.playerOpen || standalone) 16.dp else if (selection.active) selectionBottomPadding + 8.dp else 88.dp,
+                .padding(bottom = if (state.playerOpen || standalone) 16.dp else if (selection.active) selectionBarHeight + 8.dp else 88.dp,
                     start = 16.dp, end = 16.dp))
         }
     }
@@ -266,9 +288,13 @@ private fun sleepLabel(at: Long): String {
 }
 
 @Composable
-private fun BottomNavigation(destination: Destination, onNavigate: (Destination) -> Unit) {
+private fun BottomNavigation(destination: Destination, hazeState: HazeState, onNavigate: (Destination) -> Unit) {
     val edge = MaterialTheme.lilt.glassEdge
-    Box(Modifier.fillMaxWidth().testTag("bottom-navigation").background(MaterialTheme.lilt.glass).drawBehind {
+    val glass = MaterialTheme.lilt.glass
+    Box(Modifier.fillMaxWidth().testTag("bottom-navigation").hazeEffect(hazeState) {
+        blurRadius = 24.dp
+        tints = listOf(HazeTint(glass.copy(alpha = .72f)))
+    }.drawBehind {
         drawLine(edge, androidx.compose.ui.geometry.Offset(0f, 0f), androidx.compose.ui.geometry.Offset(size.width, 0f), 1.dp.toPx())
     }) {
         Row(Modifier.fillMaxWidth().selectableGroup().navigationBarsPadding().padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
@@ -297,13 +323,15 @@ private fun BottomNavigation(destination: Destination, onNavigate: (Destination)
 }
 
 @Composable
-private fun MiniPlayer(player: PlaybackSnapshot, previewSong: Song?, preview: Boolean, modifier: Modifier,
+private fun MiniPlayer(player: PlaybackSnapshot, previewSong: Song?, preview: Boolean, hazeState: HazeState, modifier: Modifier,
                        onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     val shadow = MaterialTheme.lilt.shadow
+    val glass = MaterialTheme.lilt.glass
     Box(modifier.fillMaxWidth().height(60.dp)
         .shadow(18.dp, shape, ambientColor = shadow.copy(alpha = .10f), spotColor = shadow.copy(alpha = .14f))
-        .clip(shape).background(MaterialTheme.lilt.glass.copy(alpha = .985f)).border(1.dp, MaterialTheme.lilt.glassEdge, shape)) {
+        .clip(shape).hazeEffect(hazeState) { blurRadius = 24.dp; tints = listOf(HazeTint(glass.copy(alpha = .72f))) }
+        .border(1.dp, MaterialTheme.lilt.glassEdge, shape)) {
         Row(Modifier.fillMaxSize().quietClickable(onClick = onOpen).padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Artwork(player.current?.artwork ?: previewSong?.cover, Modifier.size(44.dp), 12.dp)
             Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {

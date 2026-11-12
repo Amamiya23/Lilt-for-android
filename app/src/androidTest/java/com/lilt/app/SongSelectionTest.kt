@@ -6,7 +6,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -47,10 +49,17 @@ class SongSelectionTest {
 
     private fun row(index: Int) = compose.onNodeWithTag("song-row-${songs[index].mid}")
     private fun visibleRow(index: Int): SemanticsNodeInteraction {
-        // Align the song above the ordinary mini-player/navigation overlay, rather than merely
-        // bringing its bounds into the full LazyColumn viewport below the playlist hero.
-        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(index + 1)
+        // The playlist hero is item 0. Bring the song to the top, then clear of the floating selection header.
+        scrollClearOfChrome(index + 1)
         return row(index).assertIsDisplayed()
+    }
+
+    /** Puts [item] in the middle band of the screen, between the floating top and bottom chrome. */
+    private fun scrollClearOfChrome(item: Int) {
+        val list = compose.onNode(hasScrollToIndexAction())
+        list.performScrollToIndex(item)
+        val offset = with(compose.density) { 200.dp.toPx() }
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, -offset) }
     }
     private fun longPress(index: Int) {
         visibleRow(index).performTouchInput { longClick() }
@@ -168,7 +177,7 @@ class SongSelectionTest {
             val songIndex = vm.state.value.local.indexOfFirst { it.mid == uris[index].toString() }
             check(songIndex >= 0)
             // The local page has its title, import card and section heading before the songs.
-            compose.onNode(hasScrollToIndexAction()).performScrollToIndex(songIndex + 3)
+            scrollClearOfChrome(songIndex + 3)
             return compose.onNodeWithTag("song-row-${uris[index]}").assertIsDisplayed()
         }
         try {
@@ -267,7 +276,7 @@ class SongSelectionTest {
         compose.waitUntil(10_000) { !vm.state.value.detailLoading && vm.state.value.detail?.songs.orEmpty().size >= 2 }
         val song = vm.state.value.detail!!.songs[1]
         val likedBefore = vm.state.value.liked.toSet()
-        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(2)
+        scrollClearOfChrome(2)
         compose.onNodeWithTag("song-row-${song.mid}").performTouchInput { longClick() }
         compose.onNodeWithText("已选 1 首").assertIsDisplayed()
         compose.onNodeWithText("添加到", substring = false).assertIsEnabled()

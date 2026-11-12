@@ -2,6 +2,8 @@
 
 package com.lilt.app.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -560,6 +562,9 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
     val round = playlist.id.startsWith("artist:")
     // Only playlists this account created can be renamed or deleted; system directories (201 liked) cannot.
     val editable = !state.preview && state.library.any { it.id == playlist.id && it.dirId in 1 until 200 }
+    // While selecting, the hero stays in place but its actions rest, so taps go to the selection.
+    val selecting = LocalSongSelection.current?.state?.active == true
+    val heroAlpha by animateFloatAsState(if (selecting) .38f else 1f, tween(180), label = "playlistHeroActions")
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding)) {
         item {
             Box {
@@ -588,9 +593,9 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
                         Modifier.padding(horizontal = 12.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center)
                     Spacer(Modifier.height(24.dp))
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        val enabled = detail.songs.isNotEmpty()
-                        Row(Modifier.weight(1f).height(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else .5f))
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).alpha(heroAlpha), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val enabled = detail.songs.isNotEmpty() && !selecting
+                        Row(Modifier.weight(1f).height(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = if (detail.songs.isNotEmpty()) 1f else .5f))
                             .quietClickable(enabled, role = Role.Button) { vm.play(detail.songs) },
                             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                             TransportIcon(Transport.Play, Modifier.size(20.dp), MaterialTheme.colorScheme.onPrimary)
