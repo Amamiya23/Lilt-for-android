@@ -40,6 +40,7 @@ object Radix {
     val Ruby11 = Color(0xFFCA244D)
     val RubyDark3 = Color(0xFF3A141E)
     val RubyDark7 = Color(0xFF883447)
+    val RubyDark9 = Color(0xFFE54666)
     val RubyDark11 = Color(0xFFFF949D)
     val PlayerBase = RubyDark7
     val PlayerTint = RubyDark3

@@ -4,6 +4,8 @@ package com.lilt.app.ui
 
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,7 +23,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -40,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.util.lerp
 import coil.compose.AsyncImage
 import com.lilt.app.R
 import com.lilt.app.data.Song
@@ -89,6 +94,21 @@ fun QuietTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled:
         TextButton(onClick, modifier.pressFeedback(source, 1f, .64f),
             enabled = enabled, colors = colors, interactionSource = source, content = content)
     }
+}
+
+/** A Material 3 confirmation: no hero icon, so the title stays start-aligned; destructive actions read in error. */
+@Composable
+fun LiltDialog(title: String, confirm: String, onDismiss: () -> Unit, onConfirm: () -> Unit,
+               destructive: Boolean = false, enabled: Boolean = true, body: (@Composable () -> Unit)? = null) {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(title, style = MaterialTheme.typography.titleMedium) },
+        text = body?.let { { ProvideTextStyle(MaterialTheme.typography.bodyLarge, it) } },
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
+        dismissButton = { QuietTextButton(onDismiss) { Text("取消") } },
+        confirmButton = {
+            QuietTextButton(onConfirm, enabled = enabled, colors = if (destructive)
+                ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            else ButtonDefaults.textButtonColors()) { Text(confirm) }
+        })
 }
 
 enum class Glyph(@param:DrawableRes val res: Int) {
@@ -214,33 +234,44 @@ fun TransportButton(kind: Transport, description: String, size: Dp = 28.dp,
     }
 }
 
-/** Two adjoining halves of the play triangle become the pause bars without changing the hit target. */
+/**
+ * The play triangle splits along a vertical seam into the two pause bars. Seam corners stay sharp while they
+ * touch, and the left half runs under the right one, so the joined triangle shows no notch or hairline;
+ * the halves are composited opaque first so that overlap never darkens a translucent tint.
+ */
 @Composable
 private fun PlayPauseIcon(playing: Boolean, modifier: Modifier, color: Color) {
-    val progress by animateFloatAsState(if (playing) 1f else 0f, tween(200), label = "playPause")
-    Canvas(modifier) {
-        fun half(play: List<Pair<Float, Float>>, pause: List<Pair<Float, Float>>) {
-            val points = play.zip(pause) { a, b ->
-                androidx.compose.ui.geometry.Offset(
-                    (a.first + (b.first - a.first) * progress) * size.width,
-                    (a.second + (b.second - a.second) * progress) * size.height)
-            }
+    val progress by animateFloatAsState(if (playing) 1f else 0f,
+        spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow), label = "playPause")
+    Canvas(modifier.graphicsLayer { alpha = color.alpha; compositingStrategy = CompositingStrategy.Offscreen }) {
+        val p = progress.coerceIn(0f, 1f)
+        val solid = color.copy(alpha = 1f)
+        val radius = size.minDimension * .06f
+        // Rounding per vertex: outer corners always, seam corners only once the bars have parted.
+        fun half(play: List<Offset>, pause: List<Offset>, rounded: List<Boolean>) {
+            val points = play.zip(pause) { a, b -> Offset(lerp(a.x, b.x, p) * size.width, lerp(a.y, b.y, p) * size.height) }
             val path = Path()
             points.forEachIndexed { index, point ->
                 val previous = points[(index + points.size - 1) % points.size]
                 val next = points[(index + 1) % points.size]
-                val before = androidx.compose.ui.geometry.lerp(point, previous, .10f)
-                val after = androidx.compose.ui.geometry.lerp(point, next, .10f)
+                val cut = minOf(radius * if (rounded[index]) 1f else p,
+                    (point - previous).getDistance() / 2f, (point - next).getDistance() / 2f)
+                val before = point + (previous - point) * (cut / (point - previous).getDistance().coerceAtLeast(.001f))
+                val after = point + (next - point) * (cut / (point - next).getDistance().coerceAtLeast(.001f))
                 if (index == 0) path.moveTo(before.x, before.y) else path.lineTo(before.x, before.y)
                 path.quadraticTo(point.x, point.y, after.x, after.y)
             }
             path.close()
-            drawPath(path, color)
+            drawPath(path, solid)
         }
-        half(listOf(.27f to .15f, .54f to .315f, .54f to .685f, .27f to .85f),
-            listOf(.24f to .15f, .43f to .15f, .43f to .85f, .24f to .85f))
-        half(listOf(.53f to .309f, .81f to .48f, .81f to .52f, .53f to .691f),
-            listOf(.57f to .15f, .76f to .15f, .76f to .85f, .57f to .85f))
+        // Triangle (.28,.14) (.82,.5) (.28,.86), its tip flattened at .775 to round; the seam sits at .55, the left half reaching to .57 beneath.
+        fun edge(x: Float, top: Boolean) = Offset(x, if (top) .14f + .36f * (x - .28f) / .54f else .86f - .36f * (x - .28f) / .54f)
+        half(listOf(Offset(.28f, .14f), edge(.57f, true), edge(.57f, false), Offset(.28f, .86f)),
+            listOf(Offset(.25f, .15f), Offset(.43f, .15f), Offset(.43f, .85f), Offset(.25f, .85f)),
+            listOf(true, false, false, true))
+        half(listOf(edge(.55f, true), edge(.775f, true), edge(.775f, false), edge(.55f, false)),
+            listOf(Offset(.57f, .15f), Offset(.75f, .15f), Offset(.75f, .85f), Offset(.57f, .85f)),
+            listOf(false, true, true, false))
     }
 }
 

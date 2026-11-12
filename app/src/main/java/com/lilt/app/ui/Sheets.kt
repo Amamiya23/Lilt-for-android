@@ -157,16 +157,10 @@ fun PlaylistNameDialog(title: String, confirm: String, initial: String = "", onD
     val trimmed = name.text.trim()
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
-        text = {
-            OutlinedTextField(name, { name = if (it.text.length > 20) it.copy(it.text.take(20)) else it }, singleLine = true,
-                shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().focusRequester(focus))
-        },
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
-        dismissButton = { QuietTextButton(onDismiss) { Text("取消") } },
-        confirmButton = {
-            QuietTextButton({ onConfirm(trimmed) }, enabled = trimmed.isNotEmpty() && trimmed != initial) { Text(confirm) }
-        })
+    LiltDialog(title, confirm, onDismiss, { onConfirm(trimmed) }, enabled = trimmed.isNotEmpty() && trimmed != initial) {
+        OutlinedTextField(name, { name = if (it.text.length > 20) it.copy(it.text.take(20)) else it }, singleLine = true,
+            shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().focusRequester(focus))
+    }
 }
 
 @Composable

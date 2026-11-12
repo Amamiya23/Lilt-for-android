@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
         if (BuildConfig.DEBUG && intent.getBooleanExtra("design_preview", false)) {
             model.enablePreview()
             when (intent.getStringExtra("preview_screen")) {
-                "player" -> model.showPlayer(true)
+                "player" -> { model.showPlayer(true); model.setPlayerPanel(PlayerPanel.Artwork) }
                 "lyrics" -> { model.showPlayer(true); model.setPlayerPanel(PlayerPanel.Lyrics) }
                 "queue" -> { model.showPlayer(true); model.setPlayerPanel(PlayerPanel.Queue) }
                 "login" -> model.navigate(Destination.Login)

@@ -542,14 +542,8 @@ private fun PlaylistMenu(playlist: Playlist, onRename: (String) -> Unit, onDelet
         PlaylistEdit.Rename -> PlaylistNameDialog("重命名歌单", "保存", playlist.title, onDismiss = { edit = null }) {
             edit = null; onRename(it)
         }
-        PlaylistEdit.Delete -> AlertDialog(onDismissRequest = { edit = null }, icon = { AppIcon(Glyph.Trash) },
-            title = { Text("删除「${playlist.title}」？") },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
-            dismissButton = { QuietTextButton({ edit = null }) { Text("取消") } },
-            confirmButton = {
-                QuietTextButton({ edit = null; onDelete() },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("删除") }
-            })
+        PlaylistEdit.Delete -> LiltDialog("删除歌单「${playlist.title}」？", "删除", onDismiss = { edit = null },
+            onConfirm = { edit = null; onDelete() }, destructive = true)
         null -> Unit
     }
 }

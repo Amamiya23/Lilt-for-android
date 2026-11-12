@@ -4,6 +4,7 @@ package com.lilt.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.*
@@ -31,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lilt.app.*
 import com.lilt.app.data.*
 import com.lilt.app.playback.PlaybackSnapshot
+import com.lilt.app.ui.theme.Radix
 import com.lilt.app.ui.theme.lilt
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeTint
@@ -89,12 +91,14 @@ fun LiltApp(vm: LiltViewModel) {
     // The floating selection actions: a 68dp card on a 12dp margin, above the navigation bar inset.
     val selectionBarHeight = 80.dp
     val onMore: (Song) -> Unit = { vm.refreshSongLike(it); menu = SongMenu.Actions(it) }
+    val playerPosition = remember { Animatable(if (state.playerOpen) 0f else 1f) }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
+        // Black shows only around the receding page while the player slides over it.
+        BoxWithConstraints(Modifier.fillMaxSize().background(Radix.Black)) {
             val expanded = maxWidth >= 700.dp
             val standalone = state.destination == Destination.Settings || state.destination == Destination.Login
             val showMini = player.current != null || state.preview
-            Row(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxSize().recedeBehindPlayer(playerPosition).background(MaterialTheme.colorScheme.background)) {
                 if (expanded && !standalone) {
                     NavigationRail(Modifier.statusBarsPadding(), containerColor = MaterialTheme.colorScheme.surface,
                         header = {
@@ -177,35 +181,24 @@ fun LiltApp(vm: LiltViewModel) {
                     }
                 }
             }
-            PlayerOverlay(state, player, vm, onMore)
+            PlayerOverlay(state, player, vm, playerPosition, onMore)
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
                 .padding(bottom = if (state.playerOpen || standalone) 16.dp else if (selection.active) selectionBarHeight + 8.dp else 88.dp,
                     start = 16.dp, end = 16.dp))
         }
     }
     deleteSelection?.let { songs ->
-        AlertDialog(onDismissRequest = { deleteSelection = null },
-            icon = { AppIcon(Glyph.Trash) }, title = { Text("删除 ${songs.size} 首歌曲？") },
-            text = { Text("将从设备中删除所选歌曲及已保存的歌词和封面。") },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
-            dismissButton = { QuietTextButton({ deleteSelection = null }) { Text("取消") } },
-            confirmButton = {
-                QuietTextButton({ deleteSelection = null; vm.deleteLocalSongs(songs) }, enabled = !state.batchBusy) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
-            })
+        LiltDialog("删除 ${songs.size} 首已下载的歌曲？", "删除", onDismiss = { deleteSelection = null },
+            onConfirm = { deleteSelection = null; vm.deleteLocalSongs(songs) }, destructive = true, enabled = !state.batchBusy) {
+            Text("歌词和封面会一并删除")
+        }
     }
     removeSelection?.let { (playlist, songs) ->
-        AlertDialog(onDismissRequest = { removeSelection = null },
-            icon = { AppIcon(Glyph.Trash) }, title = { Text("移除 ${songs.size} 首歌曲？") },
-            text = { Text(if (playlist.dirId == 201) "将取消喜欢所选歌曲。" else "将从「${playlist.title}」移除所选歌曲。") },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 0.dp,
-            dismissButton = { QuietTextButton({ removeSelection = null }) { Text("取消") } },
-            confirmButton = {
-                QuietTextButton({ removeSelection = null; vm.removeSongsFromPlaylist(songs, playlist) }, enabled = !state.batchBusy) {
-                    Text("移除", color = MaterialTheme.colorScheme.error)
-                }
-            })
+        val liked = playlist.dirId == 201
+        LiltDialog(if (liked) "取消喜欢 ${songs.size} 首歌曲？" else "从「${playlist.title}」移除 ${songs.size} 首歌曲？",
+            if (liked) "取消喜欢" else "移除", onDismiss = { removeSelection = null },
+            onConfirm = { removeSelection = null; vm.removeSongsFromPlaylist(songs, playlist) },
+            destructive = true, enabled = !state.batchBusy)
     }
     val dark = state.playerOpen
     when (val current = menu) {
@@ -256,19 +249,10 @@ fun LiltApp(vm: LiltViewModel) {
         is SongMenu.CreateSelection -> PlaylistNameDialog("新建歌单", "创建", onDismiss = { menu = null }) {
             vm.createPlaylistWithSongs(it, current.songs); menu = null
         }
-        is SongMenu.Delete -> AlertDialog(
-            onDismissRequest = { menu = null },
-            icon = { AppIcon(Glyph.Trash) },
-            title = { Text("删除歌曲？") },
-            text = { Text("将从设备中删除「${current.song.title}」及已保存的歌词和封面。") },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 0.dp,
-            dismissButton = { QuietTextButton({ menu = null }) { Text("取消") } },
-            confirmButton = {
-                QuietTextButton({ menu = null; vm.deleteLocal(current.song) }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
-            })
+        is SongMenu.Delete -> LiltDialog("删除已下载的「${current.song.title}」？", "删除", onDismiss = { menu = null },
+            onConfirm = { menu = null; vm.deleteLocal(current.song) }, destructive = true) {
+            Text("歌词和封面会一并删除")
+        }
         SongMenu.Quality -> ChoiceSheet("在线播放音质", QualityOptions, state.quality, { menu = null }, dark) {
             vm.setQuality(it); menu = null; vm.notify("将在下一首歌曲生效")
         }

@@ -106,6 +106,7 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
         fade = preferences.getBoolean("fade", false), wordLyrics = preferences.getBoolean("word_lyrics", true),
         downloadQuality = preferences.getString("download_quality", "hq") ?: "hq",
         cacheLimitMb = preferences.getLong("cache_limit_mb", 2048),
+        playerPanel = PlayerPanel.entries.firstOrNull { it.name == preferences.getString("player_panel", "") } ?: PlayerPanel.Artwork,
         recent = readSongs("recent"), local = readSongs("local"),
         searchHistory = readStrings("search_history"),
     ))
@@ -222,10 +223,8 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
             topLevel = if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) destination else it.topLevel) }
     }
     fun back() {
-        if (state.value.playerOpen) {
-            if (state.value.playerPanel != PlayerPanel.Artwork) setPlayerPanel(PlayerPanel.Artwork)
-            else showPlayer(false)
-        } else {
+        if (state.value.playerOpen) showPlayer(false)
+        else {
             if (state.value.destination == Destination.Login) cancelQr()
             val destination = backStack.removeLastOrNull() ?: Destination.Home
             if (state.value.destination == Destination.Playlist && destination == Destination.Playlist) {
@@ -239,11 +238,12 @@ class LiltViewModel(application: Application) : AndroidViewModel(application) {
                 topLevel = if (destination in listOf(Destination.Home, Destination.Search, Destination.Library)) destination else it.topLevel) }
         }
     }
-    fun showPlayer(open: Boolean) {
-        // Keep the current panel visible throughout dismissal; a fresh opening starts with artwork.
-        mutable.update { it.copy(playerOpen = open, playerPanel = if (open) PlayerPanel.Artwork else it.playerPanel) }
+    /** The player reopens on the panel it was closed from, across launches too. */
+    fun showPlayer(open: Boolean) { mutable.update { it.copy(playerOpen = open) } }
+    fun setPlayerPanel(panel: PlayerPanel) {
+        preferences.edit().putString("player_panel", panel.name).apply()
+        mutable.update { it.copy(playerPanel = panel) }
     }
-    fun setPlayerPanel(panel: PlayerPanel) { mutable.update { it.copy(playerPanel = panel) } }
     fun setTheme(mode: ThemeMode) {
         preferences.edit().putString("theme", mode.name).apply()
         mutable.update { it.copy(theme = mode) }
