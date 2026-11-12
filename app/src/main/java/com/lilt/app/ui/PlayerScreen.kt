@@ -42,7 +42,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.layout.Layout
@@ -55,19 +54,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.LineBreak
-import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lilt.app.*
-import com.lilt.app.data.LyricLine
 import com.lilt.app.data.Song
 import com.lilt.app.playback.PlaybackSnapshot
 import com.lilt.app.ui.theme.Radix
@@ -424,26 +418,9 @@ private fun PanelActions(state: AppState, vm: LiltViewModel, modifier: Modifier)
     }
 }
 
-/** Lines dim and blur with their distance below the sung line, as in the design. */
-private fun lineLook(offset: Int): Pair<Float, Float> = when {
-    offset < 0 -> .35f to 0f
-    offset == 0 -> 1f to 0f
-    offset == 1 -> .40f to 0f
-    offset == 2 -> .30f to 1.5f
-    offset == 3 -> .22f to 2.5f
-    else -> .15f to 3.5f
-}
-
-private val LyricStyle = TextStyle(fontSize = 28.sp, lineHeight = 1.3.em, fontWeight = FontWeight.ExtraBold,
-    lineBreak = LineBreak.Simple, lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None))
-
 @Composable
 private fun LyricsContent(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, modifier: Modifier) {
     val lines = state.lyrics.lines
-    // Open already on the sung line, rather than scrolling to it from the top while the panel fades in.
-    val listState = rememberLazyListState((lines.indexOfLast {
-        it.timeMs <= if (state.preview) 62000L else player.positionAt(SystemClock.elapsedRealtime())
-    } - 2).coerceAtLeast(0))
     val wordTimed = lines.any { it.words.isNotEmpty() }
     // Word highlights follow a per-frame clock; the player itself only reports every 400 ms.
     val position = produceState(if (state.preview) 62000L else player.positionMs, player, state.preview, wordTimed) {
@@ -453,10 +430,6 @@ private fun LyricsContent(state: AppState, player: PlaybackSnapshot, vm: LiltVie
     }
     val activeIndex by remember(lines) {
         derivedStateOf { lines.indexOfLast { it.timeMs <= position.value }.coerceAtLeast(0) }
-    }
-    // Two lines stay visible above the one being sung.
-    LaunchedEffect(activeIndex, lines) {
-        if (!listState.isScrollInProgress && lines.isNotEmpty()) listState.animateScrollToItem((activeIndex - 2).coerceAtLeast(0))
     }
     Box(modifier) {
         when {
@@ -469,27 +442,8 @@ private fun LyricsContent(state: AppState, player: PlaybackSnapshot, vm: LiltVie
             }
             lines.isEmpty() -> Text("暂无歌词，静静听", Modifier.align(Alignment.Center),
                 style = MaterialTheme.typography.titleMedium, color = Soft)
-            else -> LazyColumn(Modifier.fillMaxSize(), listState, contentPadding = PaddingValues(top = 4.dp, bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                itemsIndexed(lines, key = { index, line -> "$index-${line.timeMs}" }) { index, line ->
-                    val (alpha, blur) = lineLook(index - activeIndex)
-                    // Focus moves between lines as one eased change of light, sharpness and size.
-                    val shown by animateFloatAsState(alpha, tween(420), label = "lyricAlpha")
-                    val softness by animateFloatAsState(blur, tween(420), label = "lyricBlur")
-                    val focus by animateFloatAsState(if (index == activeIndex) 1f else .96f,
-                        spring(dampingRatio = .8f, stiffness = Spring.StiffnessLow), label = "lyricFocus")
-                    Column(Modifier.fillMaxWidth().graphicsLayer {
-                            scaleX = focus; scaleY = focus; transformOrigin = TransformOrigin(0f, .5f)
-                        }.clip(RoundedCornerShape(10.dp)).quietClickable { vm.playback.seekTo(line.timeMs) }
-                        .then(if (softness > .05f) Modifier.blur(softness.dp, BlurredEdgeTreatment.Unbounded) else Modifier)
-                        .padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (index == activeIndex && line.words.isNotEmpty()) SungLine(line, position, LyricStyle)
-                        else Text(line.text, color = Color.White.copy(alpha = shown), style = LyricStyle)
-                        if (line.translation.isNotBlank()) Text(line.translation, color = Color.White.copy(alpha = shown * .7f),
-                            fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
+            else -> LyricsList(lines, activeIndex, position, vm.playback::seekTo, Modifier.fillMaxSize(),
+                songKey = player.current?.id)
         }
     }
 }

@@ -196,9 +196,9 @@ private fun ChartRow(chart: Playlist, index: Int, onClick: () -> Unit) {
 
 @Composable
 private fun DailyCard(songs: List<Song>, signedIn: Boolean, onClick: () -> Unit) {
-    val foreground = Color.White
+    val foreground = Radix.White
     val shape = RoundedCornerShape(24.dp)
-    BoxWithConstraints(Modifier.fillMaxWidth().height(224.dp).shadow(14.dp, shape,
+    BoxWithConstraints(Modifier.fillMaxWidth().height(184.dp).shadow(14.dp, shape,
         ambientColor = Radix.DailyShade.copy(alpha = .2f), spotColor = Radix.DailyShade.copy(alpha = .25f))
         .clip(shape).background(Brush.linearGradient(listOf(Radix.DailyStart, Radix.DailyEnd, Radix.DailyShade.copy(alpha = .9f)),
             start = Offset(Float.POSITIVE_INFINITY, 0f), end = Offset(0f, Float.POSITIVE_INFINITY)))
@@ -208,7 +208,7 @@ private fun DailyCard(songs: List<Song>, signedIn: Boolean, onClick: () -> Unit)
             coil.compose.AsyncImage(songs.first().cover, null, Modifier.fillMaxSize().blur(28.dp).alpha(.28f),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop)
         }
-        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Radix.DailyShade.copy(alpha = .85f), .6f to Color.Transparent)))
+        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Radix.DailyShade.copy(alpha = .85f), .6f to Radix.DailyShade.copy(alpha = 0f))))
         Canvas(Modifier.fillMaxSize()) {
             val center = Offset(size.width * .84f, size.height * .5f)
             for (i in 0..18) drawCircle(foreground.copy(alpha = (.06f - i * .0025f).coerceAtLeast(.012f)),
