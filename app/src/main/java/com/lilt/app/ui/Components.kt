@@ -276,16 +276,19 @@ private fun PlayPauseIcon(playing: Boolean, modifier: Modifier, color: Color) {
 }
 
 /** A song row. [subtitle] defaults to the artist; [trailing] replaces the more button, as the like heart on home shelves. */
+val LocalSongAvailability = staticCompositionLocalOf<(Song) -> Boolean> { { true } }
+
 @Composable
 fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modifier = Modifier,
             active: Boolean = false, index: Int? = null, height: Dp = 64.dp, cover: Dp = 48.dp, coverRadius: Dp = 8.dp,
             subtitle: String = song.artist, trailing: (@Composable () -> Unit)? = null) {
     val tertiary = MaterialTheme.lilt.textTertiary
+    val playable = LocalSongAvailability.current(song)
     val selection = LocalSongSelection.current?.takeIf { song.mid in it.availableIds }?.state
     val selecting = selection?.active == true
     val checked = selecting && song.mid in selection.selectedIds
     val source = remember { MutableInteractionSource() }
-    val interaction = if (selection == null) Modifier.quietClickable(onClick = onClick)
+    val interaction = if (selection == null) Modifier.quietClickable(enabled = playable, onClick = onClick)
         else Modifier.quietIndication(source).pressFeedback(source, 1f, .76f).combinedClickable(
             interactionSource = source, indication = null,
             role = if (selecting) Role.Checkbox else Role.Button,
@@ -293,7 +296,7 @@ fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modif
             onLongClick = {
                 if (selection.active) selection.toggle(song.mid) else selection.start(song.mid)
             },
-            onClick = { if (selection.active) selection.toggle(song.mid) else onClick() })
+            onClick = { if (selection.active) selection.toggle(song.mid) else if (playable) onClick() })
     Row(modifier.fillMaxWidth().heightIn(min = height).clip(RoundedCornerShape(12.dp))
         .background(if (checked) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
         .testTag("song-row-${song.mid}").semantics {
@@ -305,20 +308,20 @@ fun SongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, modifier: Modif
         .then(interaction), verticalAlignment = Alignment.CenterVertically) {
         if (index != null) {
             Box(Modifier.width(22.dp), contentAlignment = Alignment.Center) {
-                if (active) AppIcon(Glyph.Volume, Modifier.size(18.dp), MaterialTheme.colorScheme.primary, "正在播放")
+                if (active) AppIcon(Glyph.Volume, Modifier.size(18.dp), if (playable) MaterialTheme.colorScheme.primary else tertiary, "正在播放")
                 else Text(index.toString(), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = tertiary)
             }
             Spacer(Modifier.width(14.dp))
         } else {
-            Artwork(song.cover, Modifier.size(cover), coverRadius)
+            Artwork(song.cover, Modifier.size(cover).graphicsLayer { alpha = if (playable) 1f else .4f }, coverRadius)
             Spacer(Modifier.width(14.dp))
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(song.title, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            Text(song.title, color = if (!playable) tertiary else if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                color = if (playable) MaterialTheme.colorScheme.onSurfaceVariant else tertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (selecting) SongSelectionCheck(checked)
         else if (trailing != null) trailing()

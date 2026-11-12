@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lilt.app.*
 import com.lilt.app.data.LyricLine
 import com.lilt.app.data.Song
@@ -533,6 +534,7 @@ private fun QueueHeader(state: AppState, player: PlaybackSnapshot, vm: LiltViewM
 /** Upcoming songs. Long-press the handle and drag to reorder; swipe a row away to remove it. */
 @Composable
 private fun QueueContent(player: PlaybackSnapshot, vm: LiltViewModel, modifier: Modifier) {
+    val availability by vm.state.collectAsStateWithLifecycle()
     val start = player.currentIndex + 1
     val upcoming = player.tracks.drop(start.coerceAtLeast(0))
     if (upcoming.isEmpty()) {
@@ -556,6 +558,7 @@ private fun QueueContent(player: PlaybackSnapshot, vm: LiltViewModel, modifier: 
     }
     LazyColumn(modifier) {
         itemsIndexed(upcoming, key = { index, _ -> keys[index] }) { index, track ->
+            val playable = availability.online || vm.canPlay(track)
             val queueIndex = start + index
             val key = keys[index]
             val isLifted = lifted == key
@@ -604,12 +607,12 @@ private fun QueueContent(player: PlaybackSnapshot, vm: LiltViewModel, modifier: 
                 Row(Modifier.fillMaxWidth().height(60.dp)
                     .graphicsLayer { scaleX = 1f + .03f * lift; scaleY = scaleX }
                     .background(Color.White.copy(alpha = .14f * lift), RoundedCornerShape(12.dp))
-                    .clip(RoundedCornerShape(10.dp)).quietClickable { vm.playback.playAt(queueIndex) },
+                    .clip(RoundedCornerShape(10.dp)).quietClickable(enabled = playable) { vm.playback.playAt(queueIndex) },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Artwork(track.artwork, Modifier.size(44.dp), 6.dp)
+                    Artwork(track.artwork, Modifier.size(44.dp).graphicsLayer { alpha = if (playable) 1f else .4f }, 6.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(track.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(track.artist, fontSize = 13.sp, color = Color.White.copy(alpha = .55f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(track.title, color = if (playable) Radix.White else Radix.SlateDark11, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(track.artist, fontSize = 13.sp, color = if (playable) Radix.White.copy(alpha = .55f) else Radix.SlateDark11, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Box(Modifier.size(44.dp).pointerInput(key) {
                         fun settle(target: Int) = scope.launch {

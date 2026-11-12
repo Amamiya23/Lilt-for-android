@@ -197,7 +197,7 @@ class SongSelectionTest {
             localRow(0)
             saveScreenshot("selection-local.png")
             compose.onNodeWithText("移除", substring = false).performClick()
-            compose.onNodeWithText("删除 2 首歌曲？").assertIsDisplayed()
+            compose.onNodeWithText("删除 2 首已下载的歌曲？").assertIsDisplayed()
             compose.onNodeWithText("取消", substring = false).performClick()
             compose.onNodeWithText("已选 2 首").assertIsDisplayed()
             assertTrue(exists(0))
@@ -265,7 +265,7 @@ class SongSelectionTest {
         }
     }
 
-    @Test fun removingFromFavoritesExplainsUnlikeAndCancelPreservesSelection() {
+    @Test fun removingFromFavoritesConfirmsUnlikeAndCancelPreservesSelection() {
         lateinit var vm: LiltViewModel
         compose.runOnUiThread {
             vm = ViewModelProvider(compose.activity)[LiltViewModel::class.java]
@@ -282,8 +282,8 @@ class SongSelectionTest {
         compose.onNodeWithText("添加到", substring = false).assertIsEnabled()
         compose.onNodeWithText("下载", substring = false).assertIsEnabled()
         compose.onNodeWithText("移除", substring = false).assertIsEnabled().performClick()
-        compose.onNodeWithText("移除 1 首歌曲？").assertIsDisplayed()
-        compose.onNodeWithText("将取消喜欢所选歌曲。").assertIsDisplayed()
+        compose.onNodeWithText("取消喜欢 1 首歌曲？").assertIsDisplayed()
+        compose.onNode(hasText("取消喜欢", substring = false) and hasAnyAncestor(isDialog())).assertIsEnabled()
         compose.onNodeWithText("取消", substring = false).performClick()
         compose.onNodeWithText("已选 1 首").assertIsDisplayed()
         compose.onNodeWithTag("song-row-${song.mid}").assertIsSelected()

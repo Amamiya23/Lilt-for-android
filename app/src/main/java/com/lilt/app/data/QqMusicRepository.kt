@@ -45,10 +45,36 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 
 /** QQ Music's own protocol; all account credentials stay inside this app. */
-class QqMusicRepository(context: Context) {
+class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkMonitor(context)) {
     private val store = MusicSessionStore(context.applicationContext)
+    val metadataCache = MetadataCache(java.io.File(context.noBackupFilesDir, "metadata"))
+    private val cacheLock = Any()
+    private val dailyMutex = Mutex()
+    private val savedSession = store.read()
     // Expired credentials are retained while their refresh material can renew them.
-    @Volatile private var session: MusicSession? = store.read()?.takeIf { it.valid || it.canRefresh }
+    @Volatile private var session: MusicSession? = savedSession?.takeIf { it.valid || it.canRefresh }
+    val accountKey: String get() = session?.let { "${it.loginType}:${it.musicId}" } ?: "guest"
+    fun cachedHome(): HomeFeed? = metadataCache.home(accountKey)
+    fun isHomeFresh(): Boolean = MetadataFreshness.homeIsFresh(metadataCache.homeUpdatedAt(accountKey), System.currentTimeMillis())
+    fun isDailyFresh(): Boolean = MetadataFreshness.dailyIsFresh(metadataCache.detailUpdatedAt(accountKey, "daily"), System.currentTimeMillis())
+    fun cachedLibrary(): List<Playlist>? = metadataCache.library(accountKey)
+    fun cachedDetail(id: String): PlaylistDetail? = metadataCache.detail(accountKey, id)
+    fun cachedLiked(): Set<String> = metadataCache.liked(accountKey).filterValues { it }.keys
+
+    init {
+        if (savedSession != null && session == null) {
+            metadataCache.clear("${savedSession.loginType}:${savedSession.musicId}")
+            store.clear()
+        }
+    }
+
+    /** Logout and cache writes share this lock, so an in-flight refresh cannot recreate a signed-out account's files. */
+    private suspend fun cacheFor(account: String, block: MetadataCache.() -> Unit) = withContext(Dispatchers.IO) {
+        synchronized(cacheLock) {
+            if (account == accountKey) runCatching { metadataCache.block() }
+            Unit
+        }
+    }
     private val mutableProfile = MutableStateFlow(session?.profile)
     val profile: StateFlow<Profile?> = mutableProfile.asStateFlow()
     private val expiredEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
@@ -90,7 +116,12 @@ class QqMusicRepository(context: Context) {
         }
     }
 
-    suspend fun home(): HomeFeed = coroutineScope {
+    suspend fun home(): HomeFeed {
+        val account = accountKey
+        return fetchHome().also { home -> cacheFor(account) { putHome(account, home) } }
+    }
+
+    private suspend fun fetchHome(): HomeFeed = coroutineScope {
         val signed = optional { activeSession() }.getOrNull()
         val featured = async {
             optional {
@@ -117,12 +148,17 @@ class QqMusicRepository(context: Context) {
         HomeFeed(songs, lists, chartLists, shelves.await())
     }
 
-    suspend fun dailySongs(): List<Song> {
+    suspend fun dailySongs(): List<Song> = dailyMutex.withLock {
+        val account = accountKey
+        if (isDailyFresh()) metadataCache.detail(account, "daily")?.let { return@withLock it.songs.also(::remember) }
         signedSession()
         val data = rpc("music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo",
             json("dirid" to 202, "optype" to 3, "tag" to 1, "userinfo" to 0, "pic_dpi" to 300))
         val entries = data.optJSONArray("songlist") ?: throw MusicApiException("QQ 音乐未返回每日推荐")
-        return MusicParsers.songs(entries).also(::remember)
+        MusicParsers.songs(entries).also(::remember).also { songs ->
+            cacheFor(account) { putDetail(account, "daily", PlaylistDetail(
+                Playlist("daily", "每日推荐", songs.firstOrNull()?.cover.orEmpty(), trackCount = songs.size), songs)) }
+        }
     }
 
     suspend fun search(query: String, type: Int = 0): SearchResult {
@@ -159,6 +195,11 @@ class QqMusicRepository(context: Context) {
     }
 
     suspend fun playlist(id: String): PlaylistDetail {
+        val account = accountKey
+        return fetchPlaylist(id).also { detail -> cacheFor(account) { putDetail(account, id, detail) } }
+    }
+
+    private suspend fun fetchPlaylist(id: String): PlaylistDetail {
         if (id.startsWith("chart:")) {
             val topId = id.removePrefix("chart:").toLongOrNull() ?: throw MusicApiException("榜单标识无效")
             val data = rpc(
@@ -202,14 +243,10 @@ class QqMusicRepository(context: Context) {
         return authenticatedPlaylist(numericId)
     }
 
-    suspend fun songUrl(song: Song, quality: String = "standard"): String {
+    suspend fun songUrl(song: Song, quality: String = "standard", strictQuality: Boolean = false): String {
         val complete = if (song.mediaMid.isBlank()) songDetails(song) else song
         val signed = activeSession()
-        val qualities = buildList {
-            if (signed != null && quality in listOf("lossless", "hires")) add("F000" to "flac")
-            if (signed != null && quality in listOf("hq", "higher", "exhigh", "lossless", "hires")) add("M800" to "mp3")
-            add("M500" to "mp3")
-        }
+        val qualities = StreamQuality.candidates(quality, signed != null, strictQuality)
         val guid = buildString { repeat(18) { append(random.nextInt(10)) } }
         for ((prefix, extension) in qualities) {
             val parameters = json(
@@ -294,6 +331,7 @@ class QqMusicRepository(context: Context) {
     } catch (error: IllegalArgumentException) { throw MusicApiException("歌词数据无法解析", cause = error) }
 
     suspend fun userPlaylists(): List<Playlist> {
+        val account = accountKey
         val s = signedSession()
         val data = rpc("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", json("uin" to s.musicId))
         val made = data.optJSONArray("v_playlist") ?: throw MusicApiException("QQ 音乐未返回歌单列表")
@@ -312,10 +350,11 @@ class QqMusicRepository(context: Context) {
                 offset += raw.length()
             }
         }
-        return lists
+        return lists.also { cacheFor(account) { putLibrary(account, it) } }
     }
 
     suspend fun like(song: Song, liked: Boolean) {
+        val account = accountKey
         signedSession()
         val complete = songDetails(song)
         suspend fun read(): Boolean {
@@ -323,26 +362,32 @@ class QqMusicRepository(context: Context) {
             val value = data.optJSONObject("m_fan")?.opt(complete.mid)
             return value as? Boolean ?: throw MusicApiException("QQ 音乐未返回喜欢状态")
         }
-        if (read() == liked) return
+        if (read() == liked) {
+            cacheFor(account) { putLiked(account, mapOf(song.mid to liked)) }
+            return
+        }
         val result = rpc("music.musicasset.PlaylistDetailWrite", if (liked) "AddSonglist" else "DelSonglist",
             json("dirId" to 201, "v_songInfo" to listOf(json("songId" to complete.id, "songType" to 0))))
         if (!result.has("retCode") || result.optInt("retCode", -1) != 0 || result.optJSONObject("result") == null) {
             throw MusicApiException("QQ 音乐未确认喜欢状态的更改")
         }
         if (read() != liked) throw MusicApiException("QQ 音乐未确认喜欢状态，请重试")
+        cacheFor(account) { putLiked(account, mapOf(song.mid to liked)) }
     }
 
     suspend fun isLiked(mid: String): Boolean {
+        if (!network.isOnline) return metadataCache.liked(accountKey)[mid] ?: false
         return likedStatus(listOf(mid)).getValue(mid)
     }
 
     /** QQ returns an entry for every requested MID; a missing value is not equivalent to false. */
     suspend fun likedStatus(mids: List<String>): Map<String, Boolean> {
+        val account = accountKey
         signedSession()
         val selected = mids.distinct()
         if (selected.size !in 1..100 || selected.any { it.isBlank() }) throw MusicApiException("一次请选择 1–100 首歌曲")
         val data = rpc("music.musicasset.SongFavRead", "IsSongFanByMid", json("v_songMid" to selected))
-        return PlaylistSongWrites.likedStatus(data, selected)
+        return PlaylistSongWrites.likedStatus(data, selected).also { statuses -> cacheFor(account) { putLiked(account, statuses) } }
     }
 
     suspend fun createQr(provider: String): LoginQr {
@@ -465,8 +510,9 @@ class QqMusicRepository(context: Context) {
     private fun isImage(bytes: ByteArray) = bytes.size > 8 &&
         (bytes.copyOfRange(0, 8).contentEquals(PNG_SIGNATURE) || bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte())
 
-    fun logout() {
+    fun logout() = synchronized(cacheLock) {
         qrLogins.keys.toList().forEach { cancelQr(LoginQr(it)) }
+        metadataCache.clear(accountKey)
         session = null
         mutableProfile.value = null
         store.clear()
@@ -565,6 +611,12 @@ class QqMusicRepository(context: Context) {
     }
 
     suspend fun album(album: Album): PlaylistDetail {
+        val account = accountKey
+        val key = if (album.mid.isNotBlank()) "album:${album.mid}" else "album-id:${album.id}"
+        return fetchAlbum(album, key).also { detail -> cacheFor(account) { putDetail(account, key, detail) } }
+    }
+
+    private suspend fun fetchAlbum(album: Album, key: String): PlaylistDetail {
         val body = cgi("/v8/fcg-bin/fcg_v8_album_info_cp.fcg",
             if (album.mid.isNotBlank()) mapOf("albummid" to album.mid) else mapOf("albumid" to album.id.toString()))
         val data = body.optJSONObject("data") ?: throw MusicApiException("QQ 音乐未返回专辑信息")
@@ -573,12 +625,17 @@ class QqMusicRepository(context: Context) {
         val artist = data.optJSONArray("singer").objects().joinToString(" / ") { it.text("name") }
             .ifBlank { songs.firstOrNull()?.artist.orEmpty() }.ifBlank { album.artist }
         val date = data.text("aDate", "time_public").take(10)
-        return PlaylistDetail(Playlist("album:$mid", data.text("name").ifBlank { album.title }, MusicParsers.cover(mid),
+        return PlaylistDetail(Playlist(key, data.text("name").ifBlank { album.title }, MusicParsers.cover(mid),
             listOf(artist, date).filter(String::isNotBlank).joinToString(" · "),
-            data.number("total", "songnum").toInt().takeIf { it > 0 } ?: songs.size), songs)
+            data.number("total", "songnum").toInt().takeIf { it > 0 } ?: songs.size, albumId = album.id), songs)
     }
 
     suspend fun artist(artist: Artist): PlaylistDetail {
+        val account = accountKey
+        return fetchArtist(artist).also { detail -> cacheFor(account) { putDetail(account, "artist:${artist.mid}", detail) } }
+    }
+
+    private suspend fun fetchArtist(artist: Artist): PlaylistDetail {
         if (artist.mid.isBlank()) throw MusicApiException("暂时无法打开这位歌手")
         val data = rpc("music.web_singer_info_svr", "get_singer_detail_info",
             json("sort" to 5, "singermid" to artist.mid, "sin" to 0, "num" to 50))
@@ -812,7 +869,7 @@ class QqMusicRepository(context: Context) {
         return when {
             s.valid -> s
             s.canRefresh -> renew(s)
-            else -> null
+            else -> { expire(s); null }
         }
     }
 
@@ -834,11 +891,14 @@ class QqMusicRepository(context: Context) {
     }
 
     private fun expire(prior: MusicSession) {
-        if (session != prior) return
-        session = null
-        mutableProfile.value = null
-        store.clear()
-        expiredEvents.tryEmit("登录已过期，请重新扫码登录")
+        synchronized(cacheLock) {
+            if (session != prior) return
+            metadataCache.clear(accountKey)
+            session = null
+            mutableProfile.value = null
+            store.clear()
+            expiredEvents.tryEmit("登录已过期，请重新扫码登录")
+        }
     }
 
     private suspend fun refreshSession(s: MusicSession): MusicSession {
@@ -912,7 +972,8 @@ class QqMusicRepository(context: Context) {
         return try {
             rpcOnce(module, method, parameters, comm(s), s, userAgent, extraHeaders)
         } catch (error: MusicApiException) {
-            if (s == null || !error.loginRejected || !s.canRefresh) throw error
+            if (s == null || !error.loginRejected) throw error
+            if (!s.canRefresh) { expire(s); throw error }
             val renewed = renew(s)
             rpcOnce(module, method, parameters, comm(renewed), renewed, userAgent, extraHeaders)
         }
@@ -949,6 +1010,10 @@ class QqMusicRepository(context: Context) {
         url: HttpUrl, body: RequestBody? = null, headers: Map<String, String> = emptyMap(), auth: Boolean = false,
         http: OkHttpClient? = null, expect: Int? = null,
     ): HttpReply = suspendCancellableCoroutine { continuation ->
+        if (!network.isOnline) {
+            continuation.resumeWithException(MusicApiException("网络连接失败，请稍后重试"))
+            return@suspendCancellableCoroutine
+        }
         val builder = Request.Builder().url(url).header("User-Agent", if (auth) "Mozilla/5.0" else USER_AGENT)
         headers.forEach { (key, value) -> builder.header(key, value) }
         body?.let(builder::post)

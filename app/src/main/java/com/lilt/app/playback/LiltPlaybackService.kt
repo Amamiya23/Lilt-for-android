@@ -12,12 +12,15 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaLibraryService
 import com.lilt.app.LiltApplication
 import com.lilt.app.data.Song
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +28,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -37,10 +43,16 @@ import kotlin.math.pow
  * foreground notification and routes lock-screen / headset controls to this player.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
-class LiltPlaybackService : MediaSessionService() {
-    private var session: MediaSession? = null
+class LiltPlaybackService : MediaLibraryService() {
+    private var session: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val preferences by lazy { getSharedPreferences("lilt_settings", Context.MODE_PRIVATE) }
+    private var archive: ServicePlaybackArchive? = null
+    private var prefetchJob: Job? = null
+    @Volatile private var prefetchWriter: CacheWriter? = null
+    private var prefetchIdentity: String? = null
+    private var lyricJob: Job? = null
+    private var lyricMid: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -55,28 +67,32 @@ class LiltPlaybackService : MediaSessionService() {
                 mapOf("Referer" to "https://y.qq.com/", "Origin" to "https://y.qq.com"),
             )
         val plain = DefaultDataSource.Factory(this, httpFactory)
-        val resolvingFactory = ResolvingDataSource.Factory(plain) { spec ->
-            val uri = spec.uri
-            val song = Song(
-                mid = uri.lastPathSegment.orEmpty(),
-                id = uri.getQueryParameter("id")?.toLongOrNull() ?: 0,
-                title = uri.getQueryParameter("title").orEmpty(),
-                artist = uri.getQueryParameter("artist").orEmpty(),
-                mediaMid = uri.getQueryParameter("mediaMid").orEmpty(),
-                albumMid = uri.getQueryParameter("albumMid").orEmpty(),
-            )
-            // The quality is part of the item's URI, so it is also part of its cache key.
-            val quality = uri.getQueryParameter("quality") ?: preferences.getString("quality", "standard") ?: "standard"
-            // Media3 calls the resolver on its loader thread, never the main thread.
-            val url = runBlocking { app.repository.songUrl(song, quality) }
-            spec.withUri(Uri.parse(url))
+        val resolvingFactory = DataSource.Factory {
+            // Resolver state belongs to a single loader; playback and prefetch can run together.
+            ResolvingDataSource(plain.createDataSource(), object : ResolvingDataSource.Resolver {
+                private var sourceUri: Uri? = null
+                override fun resolveDataSpec(spec: DataSpec): DataSpec {
+                    val uri = spec.uri
+                    sourceUri = uri.takeIf { it.scheme == "lilt" }
+                    if (sourceUri == null) return spec
+                    val quality = uri.getQueryParameter("quality") ?: preferences.getString("quality", "standard") ?: "standard"
+                    // Media3 calls the resolver on its loader thread, never the main thread.
+                    val url = runBlocking { app.repository.songUrl(songFromUri(uri), quality, strictQuality = true) }
+                    return spec.withUri(Uri.parse(url))
+                }
+
+                // CacheDataSource persists getUri() as redirect metadata. Signed URLs must stay transient.
+                override fun resolveReportedUri(uri: Uri): Uri = sourceUri ?: uri
+            })
         }
-        // The cache sees the stable lilt:// address; only a cache miss resolves a signed URL.
+        // CachedAudioDataSource supplies a stable song/quality key before signed URL resolution.
         val cached = CacheDataSource.Factory().setCache(app.audioCache.cache).setUpstreamDataSourceFactory(resolvingFactory)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        val cacheOnly = CacheDataSource.Factory().setCache(app.audioCache.cache)
+            .setUpstreamDataSourceFactory(null).setCacheWriteDataSinkFactory(null)
+        val onlineAudio = CachedAudioDataSource.Factory(app.audioCache, { app.network.isOnline }, cached, cacheOnly)
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
-                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(RoutingDataSource.Factory(cached, plain)),
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(RoutingDataSource.Factory(onlineAudio, plain)),
             )
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -89,6 +105,31 @@ class LiltPlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
         val player = ShapedPlayer(exo)
+        exo.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                skipUnavailable(exo)
+                fetchCurrentLyrics(exo)
+                prefetchNext(exo, cached)
+            }
+        })
+        scope.launch {
+            app.network.online.collectLatest { online ->
+                if (!online) {
+                    cancelPrefetch()
+                    reopenOffline(exo)
+                }
+                skipUnavailable(exo)
+                fetchCurrentLyrics(exo)
+                prefetchNext(exo, cached)
+            }
+        }
+        scope.launch {
+            app.audioCache.available.collectLatest { skipUnavailable(exo) }
+        }
+        scope.launch {
+            app.audioCache.generation.collectLatest { cancelPrefetch() }
+        }
+        archive = ServicePlaybackArchive(this, player, scope).also { it.restoreIfEmpty() }
         val launchIntent = Intent().setClassName(packageName, "com.lilt.app.MainActivity")
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val activity = PendingIntent.getActivity(
@@ -97,10 +138,116 @@ class LiltPlaybackService : MediaSessionService() {
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        session = MediaSession.Builder(this, player)
+        session = MediaLibrarySession.Builder(this, player, requireNotNull(archive).callback)
             .setSessionActivity(activity)
             .build()
     }
+
+    private fun canPlay(item: MediaItem): Boolean {
+        val app = application as LiltApplication
+        return item.localConfiguration?.uri?.scheme != "lilt" || item.mediaId in app.audioCache.available.value
+    }
+
+    /** Drop an open network loader so a complete alternate quality can be selected immediately. */
+    private fun reopenOffline(exo: ExoPlayer) {
+        val app = application as LiltApplication
+        val item = exo.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri ?: return
+        if (uri.scheme != "lilt") return
+        val requested = uri.getQueryParameter("quality") ?: "standard"
+        if (app.audioCache.cachedQuality(item.mediaId, requested, false) == requested) return
+        val index = exo.currentMediaItemIndex
+        val position = exo.currentPosition
+        exo.stop()
+        exo.seekTo(index, position)
+        if (exo.playWhenReady && canPlay(item)) exo.prepare()
+    }
+
+    private fun skipUnavailable(exo: ExoPlayer) {
+        val app = application as LiltApplication
+        if (app.network.isOnline || !exo.playWhenReady || exo.mediaItemCount == 0) return
+        val current = exo.currentMediaItem ?: return
+        if (canPlay(current)) return
+        // Traverse the actual shuffle order without repeat, then wrap once. Repeat-one cannot loop.
+        val timeline = exo.currentTimeline
+        val order = buildList {
+            var index = timeline.getFirstWindowIndex(exo.shuffleModeEnabled)
+            while (index != C.INDEX_UNSET && size < exo.mediaItemCount) {
+                add(index)
+                index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, exo.shuffleModeEnabled)
+            }
+        }.ifEmpty { (0 until exo.mediaItemCount).toList() }
+        val next = nextPlayableIndex(order, exo.currentMediaItemIndex) { canPlay(exo.getMediaItemAt(it)) }
+        if (next == null) { exo.pause(); exo.stop() }
+        else { exo.seekToDefaultPosition(next); exo.prepare() }
+    }
+
+    private fun fetchCurrentLyrics(exo: ExoPlayer) {
+        val app = application as LiltApplication
+        val item = exo.currentMediaItem ?: return
+        if (!app.network.isOnline || item.localConfiguration?.uri?.scheme != "lilt") return
+        val song = TrackMediaItem.song(item) ?: songFromUri(item.localConfiguration!!.uri)
+        if (lyricMid == song.mid) return
+        lyricJob?.cancel()
+        lyricMid = song.mid
+        lyricJob = scope.launch(Dispatchers.IO) {
+            try {
+                if (app.lyricCache.get(song.mid) == null) app.lyricCache.put(song.mid, app.repository.lyrics(song))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                lyricMid = null
+            }
+        }
+    }
+
+    private fun prefetchNext(exo: ExoPlayer, cached: CacheDataSource.Factory) {
+        val app = application as LiltApplication
+        if (!app.network.isOnline || !exo.playWhenReady) { cancelPrefetch(); return }
+        val nextIndex = exo.nextMediaItemIndex
+        if (nextIndex == C.INDEX_UNSET || nextIndex == exo.currentMediaItemIndex) { cancelPrefetch(); return }
+        val item = exo.getMediaItemAt(nextIndex)
+        val uri = item.localConfiguration?.uri
+        if (uri?.scheme != "lilt") { cancelPrefetch(); return }
+        val quality = uri.getQueryParameter("quality") ?: "standard"
+        val key = AudioCacheKey.of(item.mediaId, quality)
+        if (prefetchIdentity == key) return
+        cancelPrefetch()
+        prefetchIdentity = key
+        val song = TrackMediaItem.song(item) ?: songFromUri(uri)
+        prefetchJob = scope.launch(Dispatchers.IO) {
+            var writer: CacheWriter? = null
+            try {
+                try {
+                    if (app.lyricCache.get(song.mid) == null) app.lyricCache.put(song.mid, app.repository.lyrics(song))
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                }
+                ensureActive()
+                writer = CacheWriter(cached.createDataSource(), DataSpec.Builder().setUri(uri).setKey(key).build(), null, null)
+                prefetchWriter = writer
+                ensureActive()
+                writer.cache()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                // Prefetch never turns an otherwise playable queue into an error state.
+            } finally {
+                if (prefetchWriter === writer) prefetchWriter = null
+                app.audioCache.refresh()
+            }
+        }
+    }
+
+    private fun cancelPrefetch() {
+        prefetchWriter?.cancel()
+        prefetchJob?.cancel()
+        prefetchJob = null
+        prefetchIdentity = null
+    }
+
+    private fun songFromUri(uri: Uri) = Song(uri.lastPathSegment.orEmpty(),
+        uri.getQueryParameter("id")?.toLongOrNull() ?: 0, uri.getQueryParameter("title").orEmpty(),
+        uri.getQueryParameter("artist").orEmpty(), mediaMid = uri.getQueryParameter("mediaMid").orEmpty(),
+        albumMid = uri.getQueryParameter("albumMid").orEmpty())
 
     /**
      * Applies the volume shaping of the settings: loudness normalization from QQ's measured
@@ -181,7 +328,7 @@ class LiltPlaybackService : MediaSessionService() {
         private fun apply() { exo.volume = loudness * fade }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = session?.player
@@ -194,6 +341,8 @@ class LiltPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        cancelPrefetch()
+        archive?.close()
         session?.let {
             it.player.release()
             it.release()

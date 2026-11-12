@@ -1,6 +1,8 @@
 package com.lilt.app.playback
 
-/** A playable URL resolved by the music provider. URLs are never persisted here. */
+import com.lilt.app.data.Song
+
+/** The stable playback address and complete catalog identity, never a signed stream URL. */
 data class ResolvedTrack(
     val id: String,
     val title: String,
@@ -8,6 +10,7 @@ data class ResolvedTrack(
     val album: String = "",
     val artwork: String = "",
     val url: String,
+    val song: Song? = null,
 )
 
 data class PlaybackSnapshot(
@@ -22,6 +25,7 @@ data class PlaybackSnapshot(
     val error: String? = null,
     /** SystemClock.elapsedRealtime() when [positionMs] was read, so a view can advance it smoothly. */
     val sampledAtMs: Long = 0,
+    val source: String = "",
 ) {
     val current: ResolvedTrack?
         get() = tracks.getOrNull(currentIndex)

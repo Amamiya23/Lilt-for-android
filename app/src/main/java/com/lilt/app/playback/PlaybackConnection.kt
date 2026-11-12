@@ -2,12 +2,9 @@ package com.lilt.app.playback
 
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -45,7 +42,6 @@ class PlaybackConnection(context: Context) {
     private val mainExecutor = Executor { Handler(Looper.getMainLooper()).post(it) }
     private var controller: MediaController? = null
     private var ticker: Job? = null
-    private var knownTracks: List<ResolvedTrack> = emptyList()
     private var closed = false
     private val mutableState = MutableStateFlow(PlaybackSnapshot())
     val state: StateFlow<PlaybackSnapshot> = mutableState.asStateFlow()
@@ -96,12 +92,11 @@ class PlaybackConnection(context: Context) {
         }
     }
 
-    fun setQueue(tracks: List<ResolvedTrack>, index: Int = 0) = command {
+    fun setQueue(tracks: List<ResolvedTrack>, index: Int = 0, source: String = "") = command {
         if (tracks.isEmpty()) return@command
         require(tracks.all { it.url.isNotBlank() }) { "A resolved playback URL is required" }
-        knownTracks = tracks.toList()
         mutableState.value = mutableState.value.copy(error = null)
-        setMediaItems(tracks.map(::mediaItem), index.coerceIn(tracks.indices), 0L)
+        setMediaItems(tracks.map { TrackMediaItem.toMediaItem(it, source) }, index.coerceIn(tracks.indices), 0L)
         prepare()
         play()
     }
@@ -109,15 +104,15 @@ class PlaybackConnection(context: Context) {
     /** Inserts after the current song, or starts playing when the queue is empty. */
     fun playNext(tracks: List<ResolvedTrack>) = command {
         if (tracks.isEmpty()) return@command
-        knownTracks = (knownTracks + tracks).distinctBy { it.id }
-        if (mediaItemCount == 0) { setMediaItems(tracks.map(::mediaItem)); prepare(); play(); return@command }
-        addMediaItems(currentMediaItemIndex + 1, tracks.map(::mediaItem))
+        val source = currentMediaItem?.let(TrackMediaItem::source).orEmpty()
+        if (mediaItemCount == 0) { setMediaItems(tracks.map { TrackMediaItem.toMediaItem(it, source) }); prepare(); play(); return@command }
+        addMediaItems(currentMediaItemIndex + 1, tracks.map { TrackMediaItem.toMediaItem(it, source) })
     }
 
     fun append(tracks: List<ResolvedTrack>) = command {
         if (tracks.isEmpty()) return@command
-        knownTracks = (knownTracks + tracks).distinctBy { it.id }
-        addMediaItems(tracks.map(::mediaItem))
+        val source = currentMediaItem?.let(TrackMediaItem::source).orEmpty()
+        addMediaItems(tracks.map { TrackMediaItem.toMediaItem(it, source) })
         if (playbackState == Player.STATE_ENDED || playbackState == Player.STATE_IDLE) { prepare(); play() }
     }
 
@@ -229,20 +224,9 @@ class PlaybackConnection(context: Context) {
 
     private fun publish() {
         val player = controller ?: return
-        val byId = knownTracks.associateBy { it.id }
         val tracks = (0 until player.mediaItemCount).map { index ->
-            val item = player.getMediaItemAt(index)
-            val meta = item.mediaMetadata
-            byId[item.mediaId] ?: ResolvedTrack(
-                id = item.mediaId,
-                title = meta.title?.toString().orEmpty(),
-                artist = meta.artist?.toString().orEmpty(),
-                album = meta.albumTitle?.toString().orEmpty(),
-                artwork = meta.artworkUri?.toString().orEmpty(),
-                url = item.localConfiguration?.uri?.toString().orEmpty(),
-            )
+            TrackMediaItem.fromMediaItem(player.getMediaItemAt(index))
         }
-        knownTracks = tracks
         val failure = player.playerError?.let(::playbackErrorMessage)
         mutableState.value = PlaybackSnapshot(
             tracks = tracks,
@@ -250,11 +234,13 @@ class PlaybackConnection(context: Context) {
             isPlaying = player.isPlaying,
             isBuffering = player.playbackState == Player.STATE_BUFFERING,
             positionMs = player.currentPosition.coerceAtLeast(0),
-            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0,
+            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
+                ?: tracks.getOrNull(player.currentMediaItemIndex)?.song?.durationMs ?: 0,
             shuffle = player.shuffleModeEnabled,
             repeatMode = player.repeatMode,
             error = failure ?: mutableState.value.error,
             sampledAtMs = android.os.SystemClock.elapsedRealtime(),
+            source = player.currentMediaItem?.let(TrackMediaItem::source).orEmpty(),
         )
     }
 
@@ -274,20 +260,6 @@ class PlaybackConnection(context: Context) {
         }
     }
 
-    private fun mediaItem(track: ResolvedTrack): MediaItem = MediaItem.Builder()
-        .setMediaId(track.id)
-        .setUri(track.url)
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(track.title)
-                .setArtist(track.artist)
-                .setAlbumTitle(track.album)
-                .apply {
-                    if (track.artwork.isNotBlank()) setArtworkUri(Uri.parse(track.artwork))
-                }
-                .build(),
-        )
-        .build()
 }
 
 internal fun playbackErrorMessage(error: PlaybackException): String {

@@ -125,6 +125,8 @@ fun LiltApp(vm: LiltViewModel) {
                     Column(Modifier.widthIn(max = if (expanded) 880.dp else 700.dp).fillMaxSize().align(Alignment.TopCenter)
                         .hazeSource(hazeState).background(MaterialTheme.colorScheme.background)) {
                         CompositionLocalProvider(
+                            LocalSongAvailability provides { song -> state.preview || state.online ||
+                                song.mid.startsWith("content:") || song.mid.startsWith("file:") || song.mid in state.cachedSongs },
                             LocalTopInset provides topInset,
                             LocalSongSelection provides SongSelectionContext(selection, availableIds)) {
                             Box(Modifier.weight(1f)) {

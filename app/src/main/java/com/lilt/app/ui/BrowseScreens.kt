@@ -63,10 +63,10 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
     val lucky = (home.shelves.firstOrNull { it.title.contains("幸运") } ?: home.shelves.firstOrNull()) ?: home.songs.takeIf { it.isNotEmpty() }?.let {
         SongShelf((profile?.name?.let { "「$it」，" } ?: "") + "这是你的幸运好歌", it)
     }
-    PullToRefreshBox(isRefreshing = state.homeLoading && home.playlists.isNotEmpty(), onRefresh = vm::refreshHome) {
+    PullToRefreshBox(isRefreshing = state.homeRefreshing, onRefresh = vm::refreshHome) {
         LazyColumn(Modifier.fillMaxSize().testTag("home-feed"), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = topPadding(8.dp), bottom = bottomPadding),
             verticalArrangement = Arrangement.spacedBy(28.dp)) {
-            item {
+            item(key = "greeting") {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         val greeting = when (LocalTime.now().hour) { in 5..10 -> "早上好"; in 11..13 -> "中午好"; in 14..18 -> "下午好"; else -> "晚上好" }
@@ -86,8 +86,8 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                     }
                 }
             }
-            item { DailyCard(home.songs, profile != null || state.preview, onClick = vm::daily) }
-            item {
+            item(key = "daily") { DailyCard(home.songs, profile != null || state.preview, onClick = vm::daily) }
+            item(key = "shortcuts") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     listOf(Glyph.Radio to "猜你想听", Glyph.Queue to "歌单广场", Glyph.Microphone to "歌手", Glyph.Disc to "新歌")
                         .forEachIndexed { i, (glyph, label) ->
@@ -109,12 +109,12 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                         }
                 }
             }
-            if (state.homeLoading && home.playlists.isEmpty()) item { LoadingState() }
-            if (state.homeError != null) item {
+            if (state.homeLoading && home.playlists.isEmpty()) item(key = "loading") { LoadingState() }
+            if (state.homeError != null) item(key = "error") {
                 EmptyState("暂时无法加载推荐", state.homeError, Glyph.Alert, "重试", onAction = vm::refreshHome)
             }
-            lucky?.let { shelf -> item { SongShelfSection(shelf, state, vm, player.current?.id, clover = shelf.title.contains("幸运")) } }
-            if (home.playlists.isNotEmpty()) item {
+            lucky?.let { shelf -> item(key = "lucky") { SongShelfSection(shelf, state, vm, player.current?.id, clover = shelf.title.contains("幸运")) } }
+            if (home.playlists.isNotEmpty()) item(key = "playlists") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     SectionTitle("为你推荐的歌单", "更多") { vm.openPlaylists("为你推荐的歌单", home.playlists) }
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -122,7 +122,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                     }
                 }
             }
-            if (home.charts.isNotEmpty()) item {
+            if (home.charts.isNotEmpty()) item(key = "charts") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     SectionTitle("排行榜", "全部") { vm.openPlaylists("排行榜", home.charts) }
                     GroupCard(radius = 20.dp, vertical = 6.dp) {
@@ -133,9 +133,11 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                     }
                 }
             }
-            home.shelves.filter { it !== lucky }.forEach { shelf -> item { SongShelfSection(shelf, state, vm, player.current?.id) } }
+            home.shelves.filter { it !== lucky }.forEachIndexed { index, shelf ->
+                item(key = "shelf-$index-${shelf.title}") { SongShelfSection(shelf, state, vm, player.current?.id) }
+            }
             if (!state.homeLoading && state.homeError == null && home.songs.isEmpty() && home.playlists.isEmpty()) {
-                item { EmptyState("还没有推荐内容", action = "刷新", onAction = vm::refreshHome) }
+                item(key = "empty") { EmptyState("还没有推荐内容", action = "刷新", onAction = vm::refreshHome) }
             }
         }
     }
@@ -617,8 +619,8 @@ fun PlaylistScreen(state: AppState, vm: LiltViewModel, bottomPadding: Dp, onMore
         itemsIndexed(detail.songs, key = { index, song -> "$index-${song.mid}" }) { index, song ->
             SongRow(song, { vm.play(detail.songs, index) }, { onMore(song) }, Modifier.padding(horizontal = 20.dp),
                 active = player.current?.id == song.mid,
-                index = if (playlist.id.startsWith("album:")) index + 1 else null,
-                height = if (playlist.id.startsWith("album:")) 60.dp else 68.dp)
+                index = if ((playlist.id.startsWith("album:") || playlist.id.startsWith("album-id:"))) index + 1 else null,
+                height = if ((playlist.id.startsWith("album:") || playlist.id.startsWith("album-id:"))) 60.dp else 68.dp)
         }
         if (!state.detailLoading && state.detailError == null && detail.songs.isEmpty()) item { EmptyState("这里还没有歌曲") }
     }

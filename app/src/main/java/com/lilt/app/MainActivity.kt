@@ -11,12 +11,30 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import com.lilt.app.ui.LiltApp
 import com.lilt.app.ui.theme.LiltTheme
 import com.lilt.app.ui.theme.ThemeMode
 
 class MainActivity : ComponentActivity() {
-    private val model: LiltViewModel by viewModels()
+    private val model: LiltViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                LiltViewModel(application, BuildConfig.DEBUG && intent.getBooleanExtra("design_preview", false)) as T
+        }
+    }
+    override fun onStart() {
+        super.onStart()
+        model.onAppForegrounded()
+    }
+
+    override fun onStop() {
+        model.onAppBackgrounded()
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
