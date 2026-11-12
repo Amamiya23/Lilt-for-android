@@ -58,10 +58,14 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 @Composable
 fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadding: Dp, onSongMore: (Song) -> Unit) {
-    val player by vm.player.collectAsStateWithLifecycle()
+    val currentSongId by remember(vm.player) {
+        vm.player.map { it.current?.id }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = vm.player.value.current?.id)
     val home = state.home
     // The first QQ shelf is the lucky one; without an account the day's chart songs stand in.
     val lucky = (home.shelves.firstOrNull { it.title.contains("幸运") } ?: home.shelves.firstOrNull()) ?: home.songs.takeIf { it.isNotEmpty() }?.let {
@@ -122,7 +126,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                     }
                 }
             }
-            lucky?.let { shelf -> item(key = "lucky") { SongShelfSection(shelf, state, vm, player.current?.id, clover = shelf.title.contains("幸运")) } }
+            lucky?.let { shelf -> item(key = "lucky") { SongShelfSection(shelf, state, vm, currentSongId, clover = shelf.title.contains("幸运")) } }
             if (home.charts.isNotEmpty()) item(key = "charts") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     SectionTitle("排行榜", "全部") { vm.openPlaylists("排行榜", home.charts, CollectionLayout.Covers) }
@@ -135,7 +139,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                 }
             }
             home.shelves.filter { it !== lucky }.forEachIndexed { index, shelf ->
-                item(key = "shelf-$index-${shelf.title}") { SongShelfSection(shelf, state, vm, player.current?.id) }
+                item(key = "shelf-$index-${shelf.title}") { SongShelfSection(shelf, state, vm, currentSongId) }
             }
             if (!state.homeLoading && state.homeError == null && home.songs.isEmpty() && home.playlists.isEmpty()) {
                 item(key = "empty") { EmptyState("还没有推荐内容", action = "刷新", onAction = vm::refreshHome) }

@@ -22,7 +22,9 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.DefaultMediaNotificationProvider
 import com.lilt.app.LiltApplication
+import com.lilt.app.R
 import com.lilt.app.data.Song
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +59,11 @@ class LiltPlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider.Builder(this).build().apply {
+                setSmallIcon(R.mipmap.ic_lilt)
+            },
+        )
         val app = application as LiltApplication
         val http = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)

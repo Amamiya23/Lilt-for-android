@@ -256,7 +256,14 @@ class PlaybackConnection(context: Context) {
         if (ticker?.isActive == true) return
         ticker = scope.launch {
             while (isActive) {
-                publish()
+                val player = controller ?: break
+                val snapshot = mutableState.value
+                mutableState.value = snapshot.copy(
+                    positionMs = player.currentPosition.coerceAtLeast(0),
+                    durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
+                        ?: snapshot.current?.song?.durationMs ?: 0,
+                    sampledAtMs = android.os.SystemClock.elapsedRealtime(),
+                )
                 delay(400)
             }
         }
