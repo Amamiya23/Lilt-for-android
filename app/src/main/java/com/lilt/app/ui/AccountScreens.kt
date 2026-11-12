@@ -61,9 +61,10 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
             }
         }
         item {
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).quietClickable {
-                vm.navigate(if (profile == null) Destination.Login else Destination.Settings)
-            }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            // Signed in, the header is only an identity; settings open from their own button.
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .then(if (profile == null) Modifier.quietClickable { vm.navigate(Destination.Login) } else Modifier),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.size(74.dp).softShadow(CircleShape).background(MaterialTheme.colorScheme.surface, CircleShape).padding(3.dp)) {
                     if (profile?.avatar?.isNotEmpty() == true) Artwork(profile.avatar, Modifier.fillMaxSize(), 37.dp)
                     else Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer, CircleShape),

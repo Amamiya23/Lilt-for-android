@@ -240,6 +240,18 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
                 }
             }
         }
+        // Likes can also come from the playback notification while this screen is alive.
+        if (!designPreview) viewModelScope.launch {
+            repository.likeChanges.collect { change ->
+                if (change.account != repository.accountKey || state.value.preview) return@collect
+                if (change.toggled) {
+                    change.statuses.forEach { (mid, liked) -> applyLikeState(mid, liked) }
+                    refreshLibrary()
+                } else mutable.update { current ->
+                    current.copy(liked = current.liked + change.statuses.filterValues { it }.keys - change.statuses.filterValues { !it }.keys)
+                }
+            }
+        }
         if (!designPreview) viewModelScope.launch {
             repository.sessionExpired.collect { message ->
                 mutable.update { it.copy(library = emptyList(), liked = emptySet()) }
@@ -562,8 +574,6 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
             try {
                 val liked = !repository.isLiked(song.mid)
                 repository.like(song, liked)
-                applyLikeState(song.mid, liked)
-                refreshLibrary()
                 notify(if (liked) "已添加到我喜欢" else "已取消喜欢")
             } catch (error: Exception) {
                 if (error is CancellationException) throw error

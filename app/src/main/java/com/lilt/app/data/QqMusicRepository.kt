@@ -44,6 +44,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 
+/** [toggled] marks a user's like or unlike, rather than a status read. */
+data class LikeChange(val account: String, val statuses: Map<String, Boolean>, val toggled: Boolean)
+
 /** QQ Music's own protocol; all account credentials stay inside this app. */
 class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkMonitor(context)) {
     private val store = MusicSessionStore(context.applicationContext)
@@ -80,6 +83,9 @@ class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkM
     private val expiredEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     /** Emits when the service refuses the saved login and a new scan is required. */
     val sessionExpired: SharedFlow<String> = expiredEvents.asSharedFlow()
+    private val likeEvents = MutableSharedFlow<LikeChange>(extraBufferCapacity = 64)
+    /** Every confirmed favorite state, so the app and the playback notification agree. */
+    val likeChanges: SharedFlow<LikeChange> = likeEvents.asSharedFlow()
     private val renewal = Mutex()
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -364,6 +370,7 @@ class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkM
         }
         if (read() == liked) {
             cacheFor(account) { putLiked(account, mapOf(song.mid to liked)) }
+            likeEvents.tryEmit(LikeChange(account, mapOf(song.mid to liked), toggled = true))
             return
         }
         val result = rpc("music.musicasset.PlaylistDetailWrite", if (liked) "AddSonglist" else "DelSonglist",
@@ -373,6 +380,7 @@ class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkM
         }
         if (read() != liked) throw MusicApiException("QQ 音乐未确认喜欢状态，请重试")
         cacheFor(account) { putLiked(account, mapOf(song.mid to liked)) }
+        likeEvents.tryEmit(LikeChange(account, mapOf(song.mid to liked), toggled = true))
     }
 
     suspend fun isLiked(mid: String): Boolean {
@@ -387,7 +395,10 @@ class QqMusicRepository(context: Context, val network: NetworkMonitor = NetworkM
         val selected = mids.distinct()
         if (selected.size !in 1..100 || selected.any { it.isBlank() }) throw MusicApiException("一次请选择 1–100 首歌曲")
         val data = rpc("music.musicasset.SongFavRead", "IsSongFanByMid", json("v_songMid" to selected))
-        return PlaylistSongWrites.likedStatus(data, selected).also { statuses -> cacheFor(account) { putLiked(account, statuses) } }
+        return PlaylistSongWrites.likedStatus(data, selected).also { statuses ->
+            cacheFor(account) { putLiked(account, statuses) }
+            likeEvents.tryEmit(LikeChange(account, statuses, toggled = false))
+        }
     }
 
     suspend fun createQr(provider: String): LoginQr {

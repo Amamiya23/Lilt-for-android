@@ -146,9 +146,14 @@ class LiltPlaybackService : MediaLibraryService() {
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        session = MediaLibrarySession.Builder(this, player, requireNotNull(archive).callback)
+        val controls = NotificationControls(this, player, app.repository, scope) { item ->
+            TrackMediaItem.song(item) ?: item.localConfiguration?.uri?.let(::songFromUri)
+        }
+        session = MediaLibrarySession.Builder(this, player, controls.wrap(requireNotNull(archive).callback))
             .setSessionActivity(activity)
+            .setMediaButtonPreferences(controls.buttons())
             .build()
+            .also { controls.session = it }
     }
 
     private fun canPlay(item: MediaItem): Boolean {
