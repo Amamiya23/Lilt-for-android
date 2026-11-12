@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -251,13 +252,16 @@ class LiltPlaybackService : MediaLibraryService() {
 
     /**
      * Applies the volume shaping of the settings: loudness normalization from QQ's measured
-     * gain, and short fades on play, pause and skipping. Neither ever blocks playback.
+     * gain, and short fades on play, pause and skipping. Neither ever blocks playback. A fading
+     * pause is reported at once, so controls follow the tap rather than the end of the fade.
      */
     private inner class ShapedPlayer(private val exo: ExoPlayer) : ForwardingPlayer(exo) {
         private var loudness = 1f
         private var fade = 1f
         private var animator: ValueAnimator? = null
         private var lookup: Job? = null
+        private var fadingOut = false
+        private val listeners = mutableListOf<Player.Listener>()
 
         private val settingsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == "normalize") normalize(exo.currentMediaItem)
@@ -267,12 +271,17 @@ class LiltPlaybackService : MediaLibraryService() {
             exo.addListener(object : Player.Listener {
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                     normalize(mediaItem)
-                    if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && fades() && exo.playWhenReady) ramp(0f, 1f, 420)
+                    if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && fades() && playWhenReady) ramp(0f, 1f, 420)
                 }
             })
             normalize(exo.currentMediaItem)
             preferences.registerOnSharedPreferenceChangeListener(settingsListener)
         }
+
+        override fun addListener(listener: Player.Listener) { super.addListener(listener); listeners += listener }
+        override fun removeListener(listener: Player.Listener) { super.removeListener(listener); listeners -= listener }
+        override fun getPlayWhenReady() = !fadingOut && super.getPlayWhenReady()
+        override fun isPlaying() = !fadingOut && super.isPlaying()
 
         override fun play() {
             if (!fades() || exo.isPlaying) { cancelRamp(); fade = 1f; apply(); super.play(); return }
@@ -282,8 +291,10 @@ class LiltPlaybackService : MediaLibraryService() {
         }
 
         override fun pause() {
+            if (fadingOut) return
             if (!fades() || !exo.isPlaying) { cancelRamp(); super.pause(); fade = 1f; apply(); return }
-            ramp(fade, 0f, 280) { super.pause(); fade = 1f; apply() }
+            ramp(fade, 0f, 280) { super.pause(); fade = 1f; apply(); setFadingOut(false) }
+            setFadingOut(true)
         }
 
         override fun release() {
@@ -324,7 +335,24 @@ class LiltPlaybackService : MediaLibraryService() {
             }
         }
 
-        private fun cancelRamp() { animator?.cancel(); animator = null }
+        private fun cancelRamp() { animator?.cancel(); animator = null; setFadingOut(false) }
+
+        /** The wrapped player only learns of the pause when the fade ends, so tell the listeners here. */
+        private fun setFadingOut(value: Boolean) {
+            val wasReady = playWhenReady
+            val wasPlaying = isPlaying
+            fadingOut = value
+            val ready = playWhenReady
+            val playing = isPlaying
+            if (ready == wasReady && playing == wasPlaying) return
+            val events = FlagSet.Builder().add(Player.EVENT_PLAY_WHEN_READY_CHANGED)
+                .addIf(Player.EVENT_IS_PLAYING_CHANGED, playing != wasPlaying).build()
+            listeners.toList().forEach {
+                if (ready != wasReady) it.onPlayWhenReadyChanged(ready, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+                if (playing != wasPlaying) it.onIsPlayingChanged(playing)
+                it.onEvents(this, Player.Events(events))
+            }
+        }
         private fun apply() { exo.volume = loudness * fade }
     }
 

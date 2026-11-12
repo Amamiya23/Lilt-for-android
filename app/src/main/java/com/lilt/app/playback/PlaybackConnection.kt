@@ -8,6 +8,7 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.CoroutineScope
@@ -232,6 +233,7 @@ class PlaybackConnection(context: Context) {
             tracks = tracks,
             currentIndex = player.currentMediaItemIndex.takeIf { tracks.isNotEmpty() } ?: -1,
             isPlaying = player.isPlaying,
+            showsPause = !Util.shouldShowPlayButton(player),
             isBuffering = player.playbackState == Player.STATE_BUFFERING,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }

@@ -17,6 +17,8 @@ data class PlaybackSnapshot(
     val tracks: List<ResolvedTrack> = emptyList(),
     val currentIndex: Int = -1,
     val isPlaying: Boolean = false,
+    /** What the play button shows: the request, which leads [isPlaying] through buffering and the IPC round trip. */
+    val showsPause: Boolean = false,
     val isBuffering: Boolean = false,
     val positionMs: Long = 0,
     val durationMs: Long = 0,

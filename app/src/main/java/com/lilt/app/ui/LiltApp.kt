@@ -21,6 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +68,7 @@ fun LiltApp(vm: LiltViewModel) {
     val player by vm.player.collectAsStateWithLifecycle()
     val profile by vm.profile.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    var chromeHeight by remember { mutableIntStateOf(0) }
     val tabStates = rememberSaveableStateHolder()
     val hazeState = remember { HazeState() }
     var menu by remember { mutableStateOf<SongMenu?>(null) }
@@ -161,7 +164,7 @@ fun LiltApp(vm: LiltViewModel) {
                     androidx.compose.animation.AnimatedVisibility(!selection.active && !standalone, Modifier.align(Alignment.BottomCenter),
                         enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 4 },
                         exit = fadeOut(tween(120)) + slideOutVertically(tween(180)) { it / 4 }) {
-                        Column(chromeWidth.fillMaxWidth(),
+                        Column(chromeWidth.fillMaxWidth().onSizeChanged { chromeHeight = it.height },
                             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             if (showMini) MiniPlayer(player, vm.currentSong(), state.preview, hazeState,
                                 Modifier.padding(horizontal = 12.dp), { vm.showPlayer(true) }, vm.playback::toggle, vm.playback::next)
@@ -184,9 +187,14 @@ fun LiltApp(vm: LiltViewModel) {
                 }
             }
             PlayerOverlay(state, player, vm, playerPosition, onMore)
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
-                .padding(bottom = if (state.playerOpen || standalone) 16.dp else if (selection.active) selectionBarHeight + 8.dp else 88.dp,
-                    start = 16.dp, end = 16.dp))
+            // Toasts float just clear of whatever chrome sits at the bottom; over the player, its controls stay free.
+            val toastPlacement = when {
+                state.playerOpen -> Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 12.dp)
+                standalone -> Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 16.dp)
+                selection.active -> Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = selectionBarHeight + 12.dp)
+                else -> Modifier.align(Alignment.BottomCenter).padding(bottom = with(LocalDensity.current) { chromeHeight.toDp() } + 12.dp)
+            }
+            SnackbarHost(snackbar, toastPlacement) { LiltToast(it.visuals.message) }
         }
     }
     deleteSelection?.let { songs ->
@@ -328,7 +336,7 @@ private fun MiniPlayer(player: PlaybackSnapshot, previewSong: Song?, preview: Bo
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (player.isBuffering) Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
-            else TransportButton(if (player.isPlaying) Transport.Pause else Transport.Play, if (player.isPlaying) "暂停" else "播放",
+            else TransportButton(if (player.showsPause) Transport.Pause else Transport.Play, if (player.showsPause) "暂停" else "播放",
                 26.dp, onClick = onToggle)
             TransportButton(Transport.Next, "下一首", 26.dp, onClick = onNext)
         }

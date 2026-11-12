@@ -380,8 +380,8 @@ private fun TransportControls(player: PlaybackSnapshot, vm: LiltViewModel, prevN
         }, {
             if (player.isBuffering) Box(Modifier.size(pause + 18.dp), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(Modifier.size(30.dp), color = Color.White, strokeWidth = 2.dp)
-            } else TransportButton(if (player.isPlaying) Transport.Pause else Transport.Play,
-                if (player.isPlaying) "暂停" else if (player.error != null) "重试播放" else "播放",
+            } else TransportButton(if (player.showsPause) Transport.Pause else Transport.Play,
+                if (player.showsPause) "暂停" else if (player.error != null) "重试播放" else "播放",
                 pause, Color.White, Modifier.size(pause + 18.dp), onClick = vm.playback::toggle)
         }) {
             TransportButton(Transport.Next, "下一首", prevNext, Color.White, Modifier.size(prevNext + 24.dp), onClick = vm.playback::next)
