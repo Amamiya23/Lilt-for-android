@@ -109,7 +109,7 @@ fun HomeScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadd
                                     }
                                 }.padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                AppIcon(glyph, tint = MaterialTheme.colorScheme.primary)
+                                AppIcon(glyph, tint = MaterialTheme.lilt.accent)
                                 Text(label, style = MaterialTheme.typography.bodySmall)
                             }
                         }
