@@ -32,6 +32,7 @@
 - [Lilt](https://github.com/Amamiya23/mygo-qyin)：QRC 解密、接口经验
 - [qq-music-api](https://github.com/Rain120/qq-music-api)：通用网页版接口
 - [Tabler](https://github.com/tabler/tabler-icons)：图标资源
+- [Linux DO](https://linux.do/) 社区
 
 **本项目与 QQ 音乐官方无关，音乐版权归各权利人所有。**
 
