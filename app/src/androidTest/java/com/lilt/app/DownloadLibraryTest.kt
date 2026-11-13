@@ -24,7 +24,51 @@ import org.junit.runner.RunWith
 import java.io.File
 
 @RunWith(AndroidJUnit4::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class DownloadLibraryTest {
+    @Suppress("DEPRECATION")
+    @Test fun onlineIdentityRoutesToDownloadBeforeNetworkAndFallsBackAfterDeletion() {
+        val context = ApplicationProvider.getApplicationContext<LiltApplication>()
+        val manager = context.getSystemService(DownloadManager::class.java)
+        val file = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "download-routing-test.wav")
+        val audio = ByteArray(256) { it.toByte() }
+        file.writeBytes(audio)
+        val id = manager.addCompletedDownload("路由测试", "测试", false, "audio/wav", file.absolutePath, file.length(), true)
+        val song = Song("download-routing-mid", 456, "路由测试", "测试")
+        val library = DownloadLibrary(context)
+        var networkOpened = false
+        fun source() = com.lilt.app.playback.RoutingDataSource(
+            androidx.media3.datasource.DataSource.Factory {
+                networkOpened = true
+                androidx.media3.datasource.ByteArrayDataSource(audio)
+            }, androidx.media3.datasource.DefaultDataSource.Factory(context), DownloadLibrary(context)::uri)
+        val spec = androidx.media3.datasource.DataSpec.Builder()
+            .setUri("lilt://song/${song.mid}?quality=lossless").setPosition(12).setLength(32).build()
+        try {
+            library.remember(id, song)
+            assertNotNull(DownloadLibrary(context).uri(song.mid))
+            assertNull(library.uri("different-recording"))
+            source().let { routed ->
+                try {
+                    assertEquals(32L, routed.open(spec))
+                    val bytes = ByteArray(32)
+                    assertEquals(32, routed.read(bytes, 0, bytes.size))
+                    assertArrayEquals(audio.copyOfRange(12, 44), bytes)
+                    assertFalse(networkOpened)
+                } finally { routed.close() }
+            }
+            assertTrue(library.delete(library.completed().first { it.id == id }))
+            assertNull(library.uri(song.mid))
+            source().let { routed ->
+                try { routed.open(spec); assertTrue(networkOpened) } finally { routed.close() }
+            }
+        } finally {
+            manager.remove(id)
+            context.getSharedPreferences("lilt_downloads", Context.MODE_PRIVATE).edit().remove(id.toString()).apply()
+            file.delete()
+        }
+    }
+
     @Suppress("DEPRECATION")
     @Test fun downloadedArtworkAndWordLyricsSurviveRecreationAndDeleteWithAudio() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<LiltApplication>()
@@ -57,6 +101,21 @@ class DownloadLibraryTest {
                 assertArrayEquals(artwork, it.readBytes())
             }
             assertEquals(lyrics, recreated.lyrics(local))
+            assertEquals(Uri.parse(local.mid), recreated.uri(original.mid))
+            assertTrue(original.mid in recreated.onlineMids(recreated.completed()))
+            assertNull(recreated.uri("some-other-recording"))
+            assertEquals(lyrics, recreated.lyrics(original))
+            // Download routing happens before the cache/network factory, including ranged reads.
+            val routed = com.lilt.app.playback.RoutingDataSource(
+                androidx.media3.datasource.DataSource.Factory { error("Downloaded audio must not open the network/cache") },
+                androidx.media3.datasource.DefaultDataSource.Factory(context), recreated::uri)
+            try {
+                assertEquals(32L, routed.open(androidx.media3.datasource.DataSpec.Builder()
+                    .setUri("lilt://song/${original.mid}?quality=lossless").setPosition(12).setLength(32).build()))
+                val bytes = ByteArray(32)
+                assertEquals(32, routed.read(bytes, 0, bytes.size))
+                assertArrayEquals(file.readBytes().copyOfRange(12, 44), bytes)
+            } finally { routed.close() }
             // A mismatched system ID must not delete some other imported document.
             assertFalse(recreated.delete(local.copy(mid = "content://different/document")))
             assertTrue(file.exists())
@@ -64,6 +123,18 @@ class DownloadLibraryTest {
                 lateinit var vm: LiltViewModel
                 scenario.onActivity { activity ->
                     vm = ViewModelProvider(activity)[LiltViewModel::class.java]
+                }
+                withTimeout(10_000) { vm.state.first { original.mid in it.downloadedMids } }
+                scenario.onActivity {
+                    assertTrue(vm.canPlay(original))
+                    vm.play(listOf(original))
+                    vm.showPlayer(true)
+                }
+                withTimeout(10_000) { vm.player.first { it.current?.id == original.mid && it.isPlaying } }
+                assertEquals(original, vm.player.value.current?.song)
+                assertFalse(original.mid in context.audioCache.available.value)
+                withTimeout(10_000) { vm.state.first { !it.lyricsLoading && it.lyrics == lyrics } }
+                scenario.onActivity {
                     vm.play(listOf(local))
                     vm.showPlayer(true)
                 }
@@ -80,6 +151,8 @@ class DownloadLibraryTest {
             assertFalse(file.exists())
             assertFalse(savedCover.exists())
             assertNull(recreated.lyrics(local))
+            assertNull(recreated.uri(original.mid))
+            assertNull(recreated.lyrics(original))
             assertFalse(context.getSharedPreferences("lilt_downloads", Context.MODE_PRIVATE).contains(id.toString()))
             assertTrue(DownloadLibrary(context).completed().none { it.id == id })
         } finally {

@@ -130,23 +130,27 @@ class CachedAudioDataSource(
 
 /** Online songs (lilt://) go through the cache; local files are read directly. */
 @UnstableApi
-class RoutingDataSource(private val online: DataSource.Factory, private val local: DataSource.Factory) : DataSource {
+class RoutingDataSource(private val online: DataSource.Factory, private val local: DataSource.Factory,
+    private val downloaded: (String) -> Uri? = { null }) : DataSource {
     private val listeners = mutableListOf<TransferListener>()
     private var current: DataSource? = null
 
     override fun addTransferListener(transferListener: TransferListener) { listeners += transferListener }
     override fun open(dataSpec: DataSpec): Long {
-        val source = (if (dataSpec.uri.scheme == "lilt") online else local).createDataSource()
+        val isOnlineSong = dataSpec.uri.scheme == "lilt"
+        val download = if (isOnlineSong) downloaded(dataSpec.uri.lastPathSegment.orEmpty()) else null
+        val source = (if (isOnlineSong && download == null) online else local).createDataSource()
         listeners.forEach(source::addTransferListener)
         current = source
-        return source.open(dataSpec)
+        return source.open(if (download == null) dataSpec else dataSpec.withUri(download))
     }
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int = requireNotNull(current).read(buffer, offset, length)
     override fun getUri(): Uri? = current?.uri
     override fun getResponseHeaders(): Map<String, List<String>> = current?.responseHeaders.orEmpty()
     override fun close() { try { current?.close() } finally { current = null } }
 
-    class Factory(private val online: DataSource.Factory, private val local: DataSource.Factory) : DataSource.Factory {
-        override fun createDataSource(): DataSource = RoutingDataSource(online, local)
+    class Factory(private val online: DataSource.Factory, private val local: DataSource.Factory,
+        private val downloaded: (String) -> Uri? = { null }) : DataSource.Factory {
+        override fun createDataSource(): DataSource = RoutingDataSource(online, local, downloaded)
     }
 }

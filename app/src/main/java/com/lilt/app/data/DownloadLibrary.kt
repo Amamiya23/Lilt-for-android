@@ -9,6 +9,7 @@ import java.io.File
 
 /** Bridges app-owned system downloads into the local library, including downloads from older versions. */
 internal class DownloadLibrary(context: Context) {
+    private val resolver = context.contentResolver
     private val manager = context.getSystemService(DownloadManager::class.java)
     private val metadata = context.getSharedPreferences("lilt_downloads", Context.MODE_PRIVATE)
     // Download resources are persistent files, independent of the evictable image/audio caches.
@@ -26,7 +27,7 @@ internal class DownloadLibrary(context: Context) {
                 throw error
             }
         }
-        val json = JSONObject().put("title", song.title).put("artist", song.artist)
+        val json = JSONObject().put("mid", song.mid).put("title", song.title).put("artist", song.artist)
             .put("album", song.album).put("cover", song.cover).put("durationMs", song.durationMs)
             .put("albumMid", song.albumMid).put("artists", JSONArray(song.artists.map {
                 JSONObject().put("mid", it.mid).put("id", it.id).put("name", it.name).put("cover", it.cover)
@@ -35,9 +36,35 @@ internal class DownloadLibrary(context: Context) {
     }
 
     fun lyrics(song: Song): Lyrics? {
-        if (!matchesDownload(song)) return null
-        val file = File(assets, "${song.id}/lyrics.json")
+        val id = if (matchesDownload(song)) song.id else downloadId(song.mid) ?: return null
+        val file = File(assets, "$id/lyrics.json")
         return if (file.isFile) OfflineLyrics.decode(file.readText()) else null
+    }
+
+    /** Exact online identity only: titles and artists cannot safely identify a recording. */
+    fun onlineMids(completed: List<Song>): Set<String> = completed.mapNotNull { song ->
+        runCatching { JSONObject(metadata.getString(song.id.toString(), "{}").orEmpty()).optString("mid") }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+    }.toSet()
+
+    fun uri(mid: String): Uri? = downloadId(mid)?.let(manager::getUriForDownloadedFile)
+
+    private fun downloadId(mid: String): Long? {
+        val ids = metadata.all.filter { (_, value) ->
+            runCatching { JSONObject(value as String).optString("mid") == mid }.getOrDefault(false)
+        }.keys.mapNotNull(String::toLongOrNull).sortedDescending()
+        for (id in ids) {
+            val readable = runCatching {
+                manager.query(DownloadManager.Query().setFilterById(id))?.use { cursor ->
+                    if (!cursor.moveToFirst() || cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) !=
+                        DownloadManager.STATUS_SUCCESSFUL) return@use false
+                    val uri = manager.getUriForDownloadedFile(id) ?: return@use false
+                    resolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+                } ?: false
+            }.getOrDefault(false)
+            if (readable) return id
+        }
+        return null
     }
 
     /** DownloadManager owns the audio; remove its record/file before removing our companion files. */
@@ -60,6 +87,7 @@ internal class DownloadLibrary(context: Context) {
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
                 val uri = manager.getUriForDownloadedFile(id) ?: continue
+                if (!runCatching { resolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false }.getOrDefault(false)) continue
                 val saved = runCatching { JSONObject(metadata.getString(id.toString(), "{}").orEmpty()) }
                     .getOrElse { JSONObject() }
                 val artists = saved.optJSONArray("artists")?.let { list ->

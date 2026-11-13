@@ -132,7 +132,7 @@ fun LiltApp(vm: LiltViewModel) {
                         .hazeSource(hazeState).background(MaterialTheme.colorScheme.background)) {
                         CompositionLocalProvider(
                             LocalSongAvailability provides { song -> state.preview || state.online ||
-                                song.mid.startsWith("content:") || song.mid.startsWith("file:") || song.mid in state.cachedSongs },
+                                song.mid.startsWith("content:") || song.mid.startsWith("file:") || song.mid in state.cachedSongs || song.mid in state.downloadedMids },
                             LocalTopInset provides topInset,
                             LocalSongSelection provides SongSelectionContext(selection, availableIds)) {
                             val shift = with(LocalDensity.current) { PageShift.roundToPx() }

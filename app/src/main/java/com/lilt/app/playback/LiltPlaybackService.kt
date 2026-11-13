@@ -56,6 +56,7 @@ class LiltPlaybackService : MediaLibraryService() {
     private var prefetchIdentity: String? = null
     private var lyricJob: Job? = null
     private var lyricMid: String? = null
+    private val downloads by lazy { com.lilt.app.data.DownloadLibrary(this) }
 
     override fun onCreate() {
         super.onCreate()
@@ -100,7 +101,7 @@ class LiltPlaybackService : MediaLibraryService() {
         val onlineAudio = CachedAudioDataSource.Factory(app.audioCache, { app.network.isOnline }, cached, cacheOnly)
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
-                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(RoutingDataSource.Factory(onlineAudio, plain)),
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(RoutingDataSource.Factory(onlineAudio, plain, downloads::uri)),
             )
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -160,7 +161,7 @@ class LiltPlaybackService : MediaLibraryService() {
 
     private fun canPlay(item: MediaItem): Boolean {
         val app = application as LiltApplication
-        return item.localConfiguration?.uri?.scheme != "lilt" || item.mediaId in app.audioCache.available.value
+        return item.localConfiguration?.uri?.scheme != "lilt" || item.mediaId in app.audioCache.available.value || downloads.uri(item.mediaId) != null
     }
 
     /** Drop an open network loader so a complete alternate quality can be selected immediately. */
@@ -207,7 +208,7 @@ class LiltPlaybackService : MediaLibraryService() {
         lyricMid = song.mid
         lyricJob = scope.launch(Dispatchers.IO) {
             try {
-                if (app.lyricCache.get(song.mid) == null) app.lyricCache.put(song.mid, app.repository.lyrics(song))
+                if (app.lyricCache.get(song.mid) == null) app.lyricCache.put(song.mid, downloads.lyrics(song) ?: app.repository.lyrics(song))
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 lyricMid = null
@@ -232,6 +233,7 @@ class LiltPlaybackService : MediaLibraryService() {
         prefetchJob = scope.launch(Dispatchers.IO) {
             var writer: CacheWriter? = null
             try {
+                if (downloads.uri(item.mediaId) != null) return@launch
                 try {
                     if (app.lyricCache.get(song.mid) == null) app.lyricCache.put(song.mid, app.repository.lyrics(song))
                 } catch (error: Exception) {

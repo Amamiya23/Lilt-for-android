@@ -118,6 +118,7 @@ data class AppState(
     val cacheUsed: Long = 0,
     val online: Boolean = true,
     val cachedSongs: Set<String> = emptySet(),
+    val downloadedMids: Set<String> = emptySet(),
 )
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -723,10 +724,10 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
         else -> ""
     }
     fun canPlay(song: Song): Boolean = state.value.preview || state.value.online ||
-        song.mid.startsWith("content:") || song.mid.startsWith("file:") || song.mid in state.value.cachedSongs
+        song.mid.startsWith("content:") || song.mid.startsWith("file:") || song.mid in state.value.cachedSongs || song.mid in state.value.downloadedMids
 
     fun canPlay(track: ResolvedTrack): Boolean = track.song?.let(::canPlay) ?: (state.value.online ||
-        track.url.startsWith("content:") || track.url.startsWith("file:") || track.id in state.value.cachedSongs)
+        track.url.startsWith("content:") || track.url.startsWith("file:") || track.id in state.value.cachedSongs || track.id in state.value.downloadedMids)
 
     private fun isRemoteDetail(id: String) = id.toLongOrNull() != null ||
         listOf("album:", "album-id:", "artist:", "chart:").any(id::startsWith)
@@ -1100,10 +1101,15 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
         lyricJob = viewModelScope.launch {
             fun display(lyrics: Lyrics): Lyrics = if (state.value.wordLyrics) lyrics
                 else Lyrics(lyrics.lines.map { line -> line.copy(words = emptyList()) })
+            val downloaded = if (state.value.preview) null else withContext(Dispatchers.IO) { downloads.lyrics(song) }
             val cached = if (state.value.preview) null else withContext(Dispatchers.IO) {
-                app.lyricCache.get(song.mid)
+                downloaded ?: app.lyricCache.get(song.mid)
             }?.let(::display)
             mutable.update { it.copy(lyrics = cached ?: Lyrics(), lyricsLoading = cached == null && (it.preview || app.network.isOnline), lyricsError = null) }
+            if (downloaded != null) {
+                mutable.update { it.copy(lyricsLoading = false) }
+                return@launch
+            }
             if (!state.value.preview && !app.network.isOnline && !song.mid.startsWith("content:") && !song.mid.startsWith("file:")) return@launch
             try {
                 val result = (when {
@@ -1260,6 +1266,7 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
             .forEach(playback::remove)
         mutable.update { current ->
             current.copy(local = current.local.filterNot { it.mid in mids }, recent = recent,
+                downloadedMids = downloads.onlineMids(downloadedSongs),
                 detail = current.detail?.let { detail ->
                     if (detail.songs.none { it.mid in mids }) detail
                     else {
@@ -1272,7 +1279,10 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
     fun refreshLocal() {
         localRefreshJob?.cancel()
         localRefreshJob = viewModelScope.launch {
-            val completed = try { withContext(Dispatchers.IO) { downloads.completed() } }
+            val (completed, onlineMids) = try { withContext(Dispatchers.IO) {
+                val songs = downloads.completed()
+                songs to downloads.onlineMids(songs)
+            } }
             catch (error: Exception) {
                 if (error is CancellationException) throw error
                 return@launch
@@ -1280,7 +1290,7 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
             downloadedSongs = completed
             val local = (completed + readSongs("local")).distinctBy { it.mid }
             songBook.putAll(local.associateBy { it.mid })
-            mutable.update { it.copy(local = local) }
+            mutable.update { it.copy(local = local, downloadedMids = onlineMids) }
         }
     }
     fun download(song: Song) {
