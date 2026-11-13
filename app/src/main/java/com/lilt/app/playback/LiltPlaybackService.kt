@@ -139,6 +139,8 @@ class LiltPlaybackService : MediaLibraryService() {
         }
         archive = ServicePlaybackArchive(this, player, scope).also { it.restoreIfEmpty() }
         val launchIntent = Intent().setClassName(packageName, "com.lilt.app.MainActivity")
+            .setAction(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val activity = PendingIntent.getActivity(
             this,
