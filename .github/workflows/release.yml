@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'Amamiya23/Lilt-for-android' || github.repository == 'Amamiya233/Lilt-for-android'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Validate release version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release_metadata.py validate --repo "Amamiya23/Lilt-for-android" --tag "$GITHUB_REF_NAME"
+      - name: Test, build and sign release assets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" && test -n "$KEYSTORE_PASSWORD"
+          trap 'rm -f "$RUNNER_TEMP/release.jks"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          mkdir -p app/src/main/assets
+          java scripts/ReleaseKey.java export "$RUNNER_TEMP/release.jks" app/src/main/assets/update_public_key.pem
+          bash gradlew testDebugUnitTest assembleRelease
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$BUILD_TOOLS/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-key-alias lilt --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD --out "$RUNNER_TEMP/Lilt.apk" app/build/outputs/apk/release/app-release-unsigned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose "$RUNNER_TEMP/Lilt.apk"
+          python3 scripts/release_metadata.py generate --repo "Amamiya23/Lilt-for-android" --tag "$GITHUB_REF_NAME" --apk "$RUNNER_TEMP/Lilt.apk" --output "$RUNNER_TEMP/update.json"
+          java scripts/ReleaseKey.java sign "$RUNNER_TEMP/release.jks" app/src/main/assets/update_public_key.pem "$RUNNER_TEMP/update.json" "$RUNNER_TEMP/update.sig"
+          openssl dgst -sha256 -verify app/src/main/assets/update_public_key.pem -signature "$RUNNER_TEMP/update.sig" "$RUNNER_TEMP/update.json"
+      - name: Upload release assets for main repository
+        if: github.repository == 'Amamiya233/Lilt-for-android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/Lilt.apk
+            ${{ runner.temp }}/update.json
+            ${{ runner.temp }}/update.sig
+      - name: Publish release
+        if: github.repository == 'Amamiya23/Lilt-for-android'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md "$RUNNER_TEMP/Lilt.apk" "$RUNNER_TEMP/update.json" "$RUNNER_TEMP/update.sig"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

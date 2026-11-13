@@ -42,6 +42,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.layout.Layout
@@ -85,13 +87,16 @@ fun PlayerScreen(state: AppState, player: PlaybackSnapshot, vm: LiltViewModel, o
     var showQuality by remember { mutableStateOf(false) }
     val tint by animateFloatAsState(when (state.playerPanel) { PlayerPanel.Artwork -> 0f; PlayerPanel.Lyrics -> .5f; PlayerPanel.Queue -> 1f },
         label = "playerTint")
-    Box(modifier.fillMaxSize().background(Radix.PlayerBase)) {
+    val playerHazeState = remember { HazeState() }
+    Box(modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().hazeSource(playerHazeState).background(Radix.PlayerBase)) {
         // Android 12+ can render the blurred cover directly as the backdrop.
         if (cover.isNotBlank()) coil.compose.AsyncImage(cover, null, Modifier.fillMaxSize().blur(90.dp),
             contentScale = androidx.compose.ui.layout.ContentScale.Crop)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
             Radix.PlayerTint.copy(alpha = .25f + .2f * tint), Radix.PlayerShade.copy(alpha = .6f + .1f * tint)))))
-        CompositionLocalProvider(LocalContentColor provides Color.White) {
+        }
+        CompositionLocalProvider(LocalContentColor provides Color.White, LocalPlayerHazeState provides playerHazeState) {
             BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 val wide = maxWidth > maxHeight
                 Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {

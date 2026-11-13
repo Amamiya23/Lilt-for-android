@@ -21,5 +21,9 @@ build-check.log
 account-*-check.log
 navigation-device-check.log
 **/__pycache__/
-.github/
+app/src/main/assets/update_public_key.pem
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/release.yml
 .cursor/

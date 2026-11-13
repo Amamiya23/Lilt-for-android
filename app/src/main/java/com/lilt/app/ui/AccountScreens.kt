@@ -43,9 +43,12 @@ import com.lilt.app.*
 import com.lilt.app.R
 import com.lilt.app.data.*
 import com.lilt.app.ui.theme.*
+import com.lilt.app.update.UpdateInstaller
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomPadding: Dp) {
+    val update by vm.update.collectAsStateWithLifecycle()
     val liked = state.library.firstOrNull { it.dirId == 201 } ?: state.library.firstOrNull { it.title.contains("喜欢") }
     val created = state.library.filter { it.dirId > 0 && it != liked }
     val collected = state.library.filter { it.dirId == 0 && it != liked }
@@ -57,7 +60,11 @@ fun LibraryScreen(state: AppState, profile: Profile?, vm: LiltViewModel, bottomP
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                IconAction(Glyph.Settings, "设置", onClick = { vm.navigate(Destination.Settings) })
+                Box {
+                    IconAction(Glyph.Settings, if (update.info != null) "设置，有新版本" else "设置", onClick = { vm.navigate(Destination.Settings) })
+                    if (update.info != null) Box(Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp)
+                        .size(8.dp).background(MaterialTheme.colorScheme.error, CircleShape))
+                }
             }
         }
         item {
@@ -192,6 +199,7 @@ private fun bytesLabel(bytes: Long): String = when {
 fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
     var choice by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
+    val update by vm.update.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refreshCacheUsage() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = topPadding(8.dp)).navigationBarsPadding()
         .padding(horizontal = 20.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -241,6 +249,11 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             SettingRow(Glyph.External, "开源许可", onClick = { choice = "licenses" })
             RowDivider()
             SettingRow(Glyph.Music, "当前版本", "v${BuildConfig.VERSION_NAME}")
+            RowDivider()
+            SettingRow(Glyph.Refresh, "检查更新", if (update.info != null) "发现新版本" else null, onClick = {
+                choice = "update"
+                if (update.info == null) vm.checkUpdate()
+            })
         }
     }
     when (choice) {
@@ -253,6 +266,48 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             vm.clearCaches { context.imageLoader.memoryCache?.clear(); context.imageLoader.diskCache?.clear() }
         }, destructive = true) { Text("已下载的歌曲不受影响") }
         "licenses" -> OpenSourceSheet(onDismiss = { choice = null }, onOpenError = { vm.notify("无法打开链接") })
+        "update" -> AlertDialog(
+            onDismissRequest = { if (!update.downloading) choice = null },
+            title = { Text(if (update.info != null) "发现新版本 v${update.info!!.versionName}" else "检查更新") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    when {
+                        update.checking -> Text("正在检查…")
+                        update.downloading -> {
+                            Text("正在下载 ${update.progress}%")
+                            LinearProgressIndicator(progress = { update.progress / 100f }, modifier = Modifier.fillMaxWidth())
+                        }
+                        update.error != null -> Text(update.error!!)
+                        update.file != null -> Text("下载完成。若需授权安装应用，返回后再次点击安装。")
+                        update.info != null -> Text(update.info!!.notes.ifBlank { "暂无更新说明" })
+                        update.checked -> Text("已是最新版本")
+                    }
+                }
+            },
+            confirmButton = {
+                when {
+                    update.checking -> Unit
+                    update.downloading -> QuietTextButton({ vm.cancelUpdateDownload() }) { Text("取消下载") }
+                    update.file != null -> QuietTextButton({
+                        if (UpdateInstaller.canInstall(context)) {
+                            runCatching { UpdateInstaller.install(context, update.file!!) }
+                                .onFailure { vm.notify("无法打开安装界面") }
+                        } else runCatching { UpdateInstaller.requestInstallPermission(context) }
+                            .onFailure { vm.notify("无法打开安装权限设置") }
+                    }) { Text("安装") }
+                    update.info != null && update.error == null -> QuietTextButton(vm::downloadUpdate) { Text("下载更新") }
+                    update.error != null -> QuietTextButton({
+                        if (update.downloadFailed) vm.downloadUpdate() else vm.checkUpdate()
+                    }) { Text("重试") }
+                    else -> QuietTextButton({ choice = null }) { Text("知道了") }
+                }
+            },
+            dismissButton = {
+                if (!update.downloading && !update.checking && update.info != null && update.file == null && update.error == null)
+                    QuietTextButton({ vm.checkUpdate() }) { Text("重新检查") }
+                else if (!update.downloading) QuietTextButton({ choice = null }) { Text("关闭") }
+            },
+        )
         "about" -> AlertDialog(onDismissRequest = { choice = null }, title = { Text("Lilt") },
             text = { Text("安静地，听音乐。\n\n基于 Kotlin 与 Jetpack Compose 开发的第三方 QQ 音乐客户端。音乐内容与收听权限由 QQ 音乐提供，版权归各权利人所有。") },
             confirmButton = { QuietTextButton({ choice = null }) { Text("知道了") } })

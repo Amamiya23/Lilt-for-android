@@ -7,7 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,9 +40,14 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.lilt.app.data.LyricLine
 import com.lilt.app.ui.theme.Radix
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 
 private val LyricStyle = TextStyle(fontSize = 28.sp, lineHeight = 1.3.em, fontWeight = FontWeight.ExtraBold,
     lineBreak = LineBreak.Simple, lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None))
+internal val LocalPlayerHazeState = staticCompositionLocalOf<HazeState?> { null }
 
 /** All lyrics stay sharp; only playback decides which line is highlighted. */
 @Composable
@@ -57,6 +62,8 @@ internal fun LyricsList(
     if (lines.isEmpty()) return
     key(songKey) {
         BoxWithConstraints(modifier) {
+            val fallbackHazeState = remember { HazeState() }
+            val hazeState = LocalPlayerHazeState.current ?: fallbackHazeState
             val anchor = maxHeight * .35f
             val anchorPx = with(LocalDensity.current) { anchor.roundToPx() }
             // Opening a song starts at its sung line. A drag yields control until an explicit return or seek.
@@ -83,7 +90,7 @@ internal fun LyricsList(
             LaunchedEffect(target, following, maxHeight) {
                 if (following) listState.animateScrollToItem(target, -anchorPx)
             }
-            LazyColumn(Modifier.fillMaxSize().testTag("lyrics-list").nestedScroll(browsing), listState,
+            LazyColumn(Modifier.fillMaxSize().hazeSource(hazeState, zIndex = 1f).testTag("lyrics-list").nestedScroll(browsing), listState,
                 contentPadding = PaddingValues(top = 4.dp, bottom = maxHeight - anchor),
                 verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 itemsIndexed(lines, key = { index, line -> "$index-${line.timeMs}" }) { index, line ->
@@ -119,11 +126,15 @@ internal fun LyricsList(
                 Box(Modifier.heightIn(min = 48.dp).pressFeedback(source)
                     .quietClickable(role = Role.Button, interactionSource = source) { seekTarget = null; following = true },
                     contentAlignment = Alignment.Center) {
-                    Row(Modifier.height(40.dp).clip(CircleShape).background(Radix.White)
+                    Row(Modifier.height(40.dp).clip(CircleShape)
+                        .hazeEffect(hazeState) {
+                            blurRadius = 24.dp
+                            tints = listOf(HazeTint(Radix.White.copy(alpha = .18f)))
+                        }.border(1.dp, Radix.White.copy(alpha = .25f), CircleShape)
                         .padding(start = 14.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        AppIcon(Glyph.Up, Modifier.size(16.dp).rotate(if (above) 0f else 180f), Radix.Ink)
-                        Text("回到当前", color = Radix.Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        AppIcon(Glyph.Up, Modifier.size(16.dp).rotate(if (above) 0f else 180f), Radix.White)
+                        Text("回到当前", color = Radix.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }

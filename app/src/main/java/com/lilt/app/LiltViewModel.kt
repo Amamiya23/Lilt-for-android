@@ -15,6 +15,8 @@ import androidx.lifecycle.viewModelScope
 import com.lilt.app.data.*
 import com.lilt.app.playback.*
 import com.lilt.app.ui.theme.ThemeMode
+import com.lilt.app.update.UpdateInfo
+import com.lilt.app.update.UpdateRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.json.JSONArray
@@ -25,6 +27,17 @@ enum class CollectionLayout { List, Covers, Compact }
 enum class Destination { Home, Search, Library, Settings, Login, Playlist, Playlists, Albums, Purchased, Local, Square }
 enum class PlayerPanel { Artwork, Lyrics, Queue }
 enum class PurchasedTab(val label: String) { Albums("专辑"), Songs("单曲") }
+
+data class UpdateState(
+    val info: UpdateInfo? = null,
+    val checking: Boolean = false,
+    val checked: Boolean = false,
+    val downloading: Boolean = false,
+    val progress: Int = 0,
+    val file: java.io.File? = null,
+    val error: String? = null,
+    val downloadFailed: Boolean = false,
+)
 
 /** 歌单广场: one category's playlists at a time, continued page by page. */
 data class SquareFeed(
@@ -115,6 +128,12 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
     val player = playback.state
     val profile: StateFlow<Profile?> = if (designPreview) MutableStateFlow<Profile?>(null).asStateFlow() else repository.profile
     private val preferences = application.getSharedPreferences("lilt_settings", Context.MODE_PRIVATE)
+    private val updates by lazy { UpdateRepository(application) }
+    private val mutableUpdate = MutableStateFlow(UpdateState())
+    val update = mutableUpdate.asStateFlow()
+    private var updateCheckJob: Job? = null
+    private var updateCheckRequested = false
+    private var updateDownloadJob: Job? = null
     private val downloads = DownloadLibrary(application)
     private var downloadedSongs: List<Song> = emptyList()
     private var localRefreshJob: Job? = null
@@ -160,6 +179,11 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
 
     init {
         if (designPreview) enablePreview()
+        if (!designPreview) {
+            restoreAvailableUpdate()
+            val last = preferences.getLong("update_last_success", 0L)
+            if (System.currentTimeMillis() - last >= 24 * 60 * 60 * 1000L) checkUpdate(false)
+        }
         songBook.putAll((state.value.local + state.value.recent).associateBy { it.mid })
         ContextCompat.registerReceiver(application, downloadReceiver,
             IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED)
@@ -288,6 +312,57 @@ class LiltViewModel(application: Application, designPreview: Boolean = false) : 
                     }
                 }
         }
+    }
+
+    private fun restoreAvailableUpdate() {
+        val json = preferences.getString("update_available", null) ?: return
+        runCatching {
+            val obj = JSONObject(json)
+            UpdateInfo(obj.getString("versionName"), obj.getInt("versionCode"), obj.getString("packageName"),
+                obj.getInt("minSdk"), obj.getString("apkUrl"), obj.getString("sha256"), obj.getLong("size"), obj.getString("notes"))
+        }.getOrNull()?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }?.let { info ->
+            mutableUpdate.update { it.copy(info = info) }
+        }
+    }
+
+    fun checkUpdate(manual: Boolean = true) {
+        if (manual) updateCheckRequested = true
+        if (updateCheckJob?.isActive == true || mutableUpdate.value.downloading) return
+        updateCheckJob = viewModelScope.launch {
+            mutableUpdate.update { it.copy(checking = true, error = null, downloadFailed = false, checked = false) }
+            try {
+                val info = updates.check()
+                val saved = info?.let { JSONObject().put("versionName", it.versionName).put("versionCode", it.versionCode)
+                    .put("packageName", it.packageName).put("minSdk", it.minSdk).put("apkUrl", it.apkUrl)
+                    .put("sha256", it.sha256).put("size", it.size).put("notes", it.notes).toString() }
+                preferences.edit().putLong("update_last_success", System.currentTimeMillis())
+                    .putString("update_available", saved).apply()
+                mutableUpdate.update { it.copy(info = info, checking = false, checked = updateCheckRequested, error = null, file = null) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                mutableUpdate.update { it.copy(checking = false, checked = updateCheckRequested,
+                    error = if (updateCheckRequested) "检查更新失败，请稍后重试" else null) }
+            }
+            finally { updateCheckRequested = false }
+        }
+    }
+
+    fun downloadUpdate() {
+        val info = mutableUpdate.value.info ?: return
+        if (updateDownloadJob?.isActive == true) return
+        updateDownloadJob = viewModelScope.launch {
+            mutableUpdate.update { it.copy(downloading = true, progress = 0, error = null, downloadFailed = false, file = null) }
+            try {
+                val file = updates.download(info) { progress -> mutableUpdate.update { it.copy(progress = progress) } }
+                mutableUpdate.update { it.copy(downloading = false, file = file) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { mutableUpdate.update { it.copy(downloading = false, downloadFailed = true, error = "下载或验证失败，请重试") } }
+        }
+    }
+
+    fun cancelUpdateDownload() {
+        updateDownloadJob?.cancel()
+        mutableUpdate.update { it.copy(downloading = false, progress = 0) }
     }
 
     fun notify(message: String) { events.tryEmit(message) }
