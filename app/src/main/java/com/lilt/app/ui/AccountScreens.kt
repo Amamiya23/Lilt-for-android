@@ -246,11 +246,7 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
         SettingsSection("关于") {
             SettingRow(Glyph.Info, "关于 Lilt", onClick = { choice = "about" })
             RowDivider()
-            SettingRow(Glyph.External, "开源许可", onClick = { choice = "licenses" })
-            RowDivider()
-            SettingRow(Glyph.Music, "当前版本", "v${BuildConfig.VERSION_NAME}")
-            RowDivider()
-            SettingRow(Glyph.Refresh, "检查更新", if (update.info != null) "发现新版本" else null, onClick = {
+            SettingRow(Glyph.Refresh, "检查更新", "v${BuildConfig.VERSION_NAME}" + if (update.info != null) " · 有更新" else "", onClick = {
                 choice = "update"
                 if (update.info == null) vm.checkUpdate()
             })
@@ -265,7 +261,6 @@ fun SettingsScreen(state: AppState, profile: Profile?, vm: LiltViewModel) {
             choice = null
             vm.clearCaches { context.imageLoader.memoryCache?.clear(); context.imageLoader.diskCache?.clear() }
         }, destructive = true) { Text("已下载的歌曲不受影响") }
-        "licenses" -> OpenSourceSheet(onDismiss = { choice = null }, onOpenError = { vm.notify("无法打开链接") })
         "update" -> AlertDialog(
             onDismissRequest = { if (!update.downloading) choice = null },
             title = { Text(if (update.info != null) "发现新版本 v${update.info!!.versionName}" else "检查更新") },
